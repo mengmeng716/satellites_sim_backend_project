@@ -37,6 +37,7 @@ def route_planning_execution(
     PacketSize: float,
     StartTime: Any,
     TaskPriority: int,
+    Duration: Any = None,
 ) -> Dict[str, Any]:
     """
     路由优化单任务接口。
@@ -51,6 +52,7 @@ def route_planning_execution(
         "PacketSize": PacketSize,
         "StartTime": StartTime,
         "TaskPriority": TaskPriority,
+        "Duration": Duration,
     }
 
     # 显式传递状态给底层推理逻辑
@@ -94,8 +96,12 @@ def route_planning_execution(
     if not is_arrived:
         isl_valid_rate = 0.0
 
+    path_queue_delay = raw_result.get("PathQueueDelay", [])
+    path_transmission_delay = raw_result.get("PathTransmissionDelay", [])
+    path_packet_loss_rate = raw_result.get("PathPacketLossRate", [])
     start_time = raw_result.get("StartTime", StartTime)
     end_time = raw_result.get("EndTime", start_time)
+    inference_time = raw_result.get("InferenceTimeSeconds", 0.0)
 
     return {
         "TaskId": str(TaskId),
@@ -103,9 +109,13 @@ def route_planning_execution(
         "TotalHopCount": int(total_hop_count),
         "PathTotalCost": float(path_total_cost),
         "EndToEndDelay": float(end_to_end_delay),
+        "QueueDelay": [float(x) for x in path_queue_delay] if isinstance(path_queue_delay, list) else [],
+        "TransmissionDelay": [float(x) for x in path_transmission_delay] if isinstance(path_transmission_delay, list) else [],
+        "PacketLossRate": [float(x) for x in path_packet_loss_rate] if isinstance(path_packet_loss_rate, list) else [],
         "ISLValidRate": float(isl_valid_rate),
         "StartTime": start_time,
         "EndTime": end_time,
+        "InferenceTimeSeconds": float(inference_time) if inference_time is not None else None,
     }
 
 
@@ -135,6 +145,7 @@ def route_planning_batch_execution(
                 PacketSize=task.get("PacketSize"),
                 StartTime=task.get("StartTime"),
                 TaskPriority=task.get("TaskPriority", 0),
+                Duration=task.get("Duration"),
             )
         )
 

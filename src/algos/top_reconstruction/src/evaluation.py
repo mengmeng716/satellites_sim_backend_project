@@ -44,6 +44,38 @@ def topology_to_graph(topology: Topology) -> Graph:
     return dict(graph)
 
 
+def _forwarding_delay_for_node(
+    forwarding_delay_ms_by_node: Optional[Mapping[int, float]],
+    node_id: int,
+    default_forwarding_delay_ms: float,
+) -> float:
+    if forwarding_delay_ms_by_node is None:
+        return max(0.0, float(default_forwarding_delay_ms))
+    return max(
+        0.0,
+        float(forwarding_delay_ms_by_node.get(int(node_id), default_forwarding_delay_ms)),
+    )
+
+
+def edge_traversal_delay_ms(
+    distance_km: float,
+    source_id: int,
+    forwarding_delay_ms_by_node: Optional[Mapping[int, float]] = None,
+    default_forwarding_delay_ms: float = 0.0,
+    include_source_forwarding_delay: bool = True,
+) -> float:
+    forwarding_delay = (
+        _forwarding_delay_for_node(
+            forwarding_delay_ms_by_node,
+            source_id,
+            default_forwarding_delay_ms,
+        )
+        if include_source_forwarding_delay
+        else 0.0
+    )
+    return propagation_delay_ms(distance_km) + forwarding_delay
+
+
 def _reconstruct_path(
     previous: Mapping[int, int],
     source: int,
@@ -70,7 +102,8 @@ def evaluate_path(
     source: int,
     target: int,
     path: Sequence[int],
-    processing_delay_ms: float = 5.0,
+    default_forwarding_delay_ms: float = 0.0,
+    forwarding_delay_ms_by_node: Optional[Mapping[int, float]] = None,
 ) -> PathResult:
     distance_km = 0.0
     for left, right in zip(path, path[1:]):
@@ -78,7 +111,15 @@ def evaluate_path(
 
     hops = max(0, len(path) - 1)
     prop_delay = propagation_delay_ms(distance_km)
-    total_delay = prop_delay + processing_delay_ms * max(0, hops - 1)
+    forwarding_delay = sum(
+        _forwarding_delay_for_node(
+            forwarding_delay_ms_by_node,
+            node_id,
+            default_forwarding_delay_ms,
+        )
+        for node_id in path[1:-1]
+    )
+    total_delay = prop_delay + forwarding_delay
     return PathResult(
         source=source,
         target=target,
@@ -94,7 +135,8 @@ def dijkstra_paths_from_source(
     graph: Graph,
     source: int,
     targets: Iterable[int],
-    processing_delay_ms: float = 5.0,
+    default_forwarding_delay_ms: float = 0.0,
+    forwarding_delay_ms_by_node: Optional[Mapping[int, float]] = None,
 ) -> Dict[int, PathResult]:
     target_set = set(int(target) for target in targets)
     if not target_set:
@@ -114,7 +156,13 @@ def dijkstra_paths_from_source(
             settled_targets.add(node)
 
         for neighbor, distance_km in graph.get(node, {}).items():
-            edge_cost = propagation_delay_ms(distance_km) + processing_delay_ms
+            edge_cost = edge_traversal_delay_ms(
+                distance_km,
+                node,
+                forwarding_delay_ms_by_node,
+                default_forwarding_delay_ms,
+                include_source_forwarding_delay=node != source,
+            )
             new_cost = current_cost + edge_cost
             if new_cost < distances.get(neighbor, float("inf")):
                 distances[neighbor] = new_cost
@@ -126,14 +174,22 @@ def dijkstra_paths_from_source(
         path = _reconstruct_path(previous, source, target)
         if path is None:
             continue
-        results[target] = evaluate_path(graph, source, target, path, processing_delay_ms)
+        results[target] = evaluate_path(
+            graph,
+            source,
+            target,
+            path,
+            default_forwarding_delay_ms,
+            forwarding_delay_ms_by_node,
+        )
     return results
 
 
 def compute_pair_paths(
     graph: Graph,
     pairs: Iterable[Pair],
-    processing_delay_ms: float = 5.0,
+    default_forwarding_delay_ms: float = 0.0,
+    forwarding_delay_ms_by_node: Optional[Mapping[int, float]] = None,
 ) -> Dict[Pair, PathResult]:
     targets_by_source: Dict[int, List[int]] = defaultdict(list)
     for source, target in pairs:
@@ -141,7 +197,13 @@ def compute_pair_paths(
 
     paths: Dict[Pair, PathResult] = {}
     for source, targets in targets_by_source.items():
-        source_paths = dijkstra_paths_from_source(graph, source, targets, processing_delay_ms)
+        source_paths = dijkstra_paths_from_source(
+            graph,
+            source,
+            targets,
+            default_forwarding_delay_ms,
+            forwarding_delay_ms_by_node,
+        )
         for target, result in source_paths.items():
             paths[(source, target)] = result
     return paths

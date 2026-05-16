@@ -13,8 +13,8 @@ def _get_default_link_attr() -> LinksQualitiesValue:
     """生成默认链路属性对象"""
     return LinksQualitiesValue(
         link_distance=0.0,
-        link_capacity=10.0,
-        left_capacity=10.0,
+        link_capacity=config.MAX_LINK_SPEED_GBPS,
+        left_capacity=1.0,
         current_flow=0.0,
         link_propagation_delay=0.0,
         queue_delay=0.0,
@@ -27,7 +27,7 @@ def _get_default_link_attr() -> LinksQualitiesValue:
 def init_walker_topology(constellation) -> Dict[str, Dict[str, LinksQualitiesValue]]:
     """
     初始化 Walker 星座拓扑 (仅确定连接关系)
-    返回符合 data_model.TopologyState.new_topology 格式的嵌套字典
+    自动适配 3600 星座 (60x60) 和 432 星座 (24x18)
     """
     num_planes = constellation.numOrbitPlane
     sats_per_plane = constellation.numSatsInPlane
@@ -53,21 +53,64 @@ def init_walker_topology(constellation) -> Dict[str, Dict[str, LinksQualitiesVal
         s_prev = (s - 1) % S
         add_neighbor(p * S + s_prev)
 
-        # 3. 面间连接 - 下一个轨道面
+        # 3. 面间连接 - 下一个轨道面 & 4. 上一个轨道面
         p_next = (p + 1) % P
-        if p == P - 1 and p_next == 0:
-            target_s = (s - 38) % S  # 异向缝隙特化
-        else:
-            target_s = (s + 59) % S
-        add_neighbor(p_next * S + target_s)
-
-        # 4. 面间连接 - 上一个轨道面
         p_prev = (p - 1) % P
-        if p == 0 and p_prev == P - 1:
-            target_s = (s + 38) % S  # 异向缝隙特化
+
+        if P == 24 and S == 18:
+            # --- 432 星座逻辑 (24x18: 奇偶面交替偏移 + 24 面闭环边界) ---
+            if p == P - 1:
+                target_s_next = (s + 4) % S
+            elif p % 2 == 0:
+                target_s_next = s
+            else:
+                target_s_next = (s - 1) % S
+
+            if p == 0:
+                target_s_prev = (s - 4) % S
+            elif p % 2 == 0:
+                target_s_prev = (s + 1) % S
+            else:
+                target_s_prev = s
+
+            add_neighbor(p_next * S + target_s_next)
+            add_neighbor(p_prev * S + target_s_prev)
+
+        elif P == 60 and S == 60:
+            # 3600 constellation: same alternating inter-plane pattern as 432,
+            # with the 60-plane closing seam shifted by 38 satellites.
+            if p == P - 1:
+                target_s_next = (s - 38) % S
+            elif p % 2 == 0:
+                target_s_next = s
+            else:
+                target_s_next = (s - 1) % S
+
+            if p == 0:
+                target_s_prev = (s + 38) % S
+            elif p % 2 == 0:
+                target_s_prev = (s + 1) % S
+            else:
+                target_s_prev = s
+
+            add_neighbor(p_next * S + target_s_next)
+            add_neighbor(p_prev * S + target_s_prev)
+
         else:
-            target_s = (s - 59) % S
-        add_neighbor(p_prev * S + target_s)
+            # --- 3600 星座及其他标准 Walker 逻辑 (保留原代码精髓) ---
+            # 3. 面间连接 - 下一个轨道面
+            if p == P - 1 and p_next == 0:
+                target_s = (s - 38) % S  # 异向缝隙特化 (针对 3600 星座)
+            else:
+                target_s = (s + 59) % S  # 常规偏移 (59 等价于 -1 mod 60)
+            add_neighbor(p_next * S + target_s)
+
+            # 4. 面间连接 - 上一个轨道面
+            if p == 0 and p_prev == P - 1:
+                target_s = (s + 38) % S  # 异向缝隙特化 (针对 3600 星座)
+            else:
+                target_s = (s - 59) % S  # 常规偏移 (-59 等价于 +1 mod 60)
+            add_neighbor(p_prev * S + target_s)
 
         new_topology[str(sat_id)] = links
 
@@ -123,3 +166,8 @@ def update_topology_snapshot(constellation, current_utc, topology: Dict[str, Dic
             # 原地更新 LinksQualitiesValue 对象属性
             link_attr.link_distance = distance
             link_attr.link_propagation_delay = (distance / SPEED_OF_LIGHT_KM_S) * 1000.0
+            link_attr.link_capacity = config.MAX_LINK_SPEED_GBPS
+            link_attr.current_flow = max(0.0, float(link_attr.current_flow))
+            utilization = link_attr.current_flow / max(config.MAX_LINK_SPEED_GBPS, 1e-9)
+            link_attr.left_capacity = 1.0 - utilization
+            link_attr.heat_value = max(0.0, min(1.0, utilization))

@@ -8,6 +8,8 @@ GRLR 特征构造器。
 import torch
 from typing import List, Tuple
 
+from ..delay_metrics import remaining_capacity_ratio as _remaining_capacity_ratio
+
 
 class FeatureBuilder:
     N_NODES = 6
@@ -101,11 +103,10 @@ class FeatureBuilder:
                     info.get("PropagationDelay", info.get("LinkPropagationDelay", info.get("LinkDistance", 0.0)))
                 )
                 queue_delay = float(info.get("QueueDelay", 0.0))
-                remaining_capacity_ratio = info.get("RemainingCapacityRatio")
-                if remaining_capacity_ratio is None:
-                    max_capacity = max(float(info.get("MaxCapacity", 0.0)), 1e-6)
-                    left_capacity = float(info.get("LeftCapacity", 0.0))
-                    remaining_capacity_ratio = left_capacity / max_capacity
+                capacity_ratio = info.get("RemainingCapacityRatio")
+                if capacity_ratio is None:
+                    capacity_ratio = _remaining_capacity_ratio(info)
+                capacity_ratio = max(0.0, min(1.0, float(capacity_ratio)))
                 heat_value = info.get(
                     "HeatValue",
                     info.get("TrafficHeat", info.get("CurrentFlow", info.get("CumFlow", 0.0))),
@@ -113,7 +114,7 @@ class FeatureBuilder:
                 edge_feats[b, idx] = torch.tensor([
                     propagation_delay / 100.0,
                     queue_delay / 100.0,
-                    float(remaining_capacity_ratio),
+                    capacity_ratio,
                     self._normalize_heat_value(float(heat_value)),
                     float(info.get("PacketLossRate", 1.0)),
                 ], device=self.device)

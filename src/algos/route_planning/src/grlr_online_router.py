@@ -35,6 +35,11 @@ _sys.modules.setdefault("grlr.config", _grlr_model_config)
 from .grlr_model_config import ConstellationConfig, ModelConfig, RoutingConfig, resolve_checkpoint_path
 from .grlr_feature_builder import FeatureBuilder
 from .grlr_model import GRLRAgent
+from ..delay_metrics import (
+    available_capacity_gbps,
+    calculate_link_delay_metrics,
+    remaining_capacity_ratio,
+)
 
 
 class DistributedRouter:
@@ -240,7 +245,7 @@ class DistributedRouter:
             0.0,
             None,
         )
-        return {
+        normalized = {
             "LinkDistance": self._to_float(self._get_attr(attr, "LinkDistance", "link_distance", "SlantRange"), 0.0, 0.0, None),
             "MaxCapacity": max_capacity,
             "LeftCapacity": left_capacity,
@@ -254,6 +259,8 @@ class DistributedRouter:
             "TrafficHeat": heat,
             "is_valid": self._to_bool(self._get_attr(attr, "is_valid", "Availability", default=True)),
         }
+        normalized["RemainingCapacityRatio"] = remaining_capacity_ratio(normalized)
+        return normalized
 
     @staticmethod
     def _to_float(value: Any, default: float, min_value: Optional[float], max_value: Optional[float]) -> float:
@@ -379,11 +386,12 @@ class DistributedRouter:
 
     @staticmethod
     def _available_capacity(qualities: Mapping[str, Any]) -> float:
-        max_capacity = max(float(qualities.get("MaxCapacity", qualities.get("LinkCapacity", 0.0))), 1e-6)
-        left_capacity = float(qualities.get("LeftCapacity", qualities.get("LinkAvailableGbps", max_capacity)))
-        if 0.0 <= left_capacity <= 1.0 and max_capacity > 1.0:
-            return left_capacity * max_capacity
-        return left_capacity
+        return available_capacity_gbps(qualities)
+
+    def _refresh_runtime_link_metrics(self, packet_size: float, duration: float) -> None:
+        for links in self._topology.values():
+            for _, attr in links:
+                attr.update(calculate_link_delay_metrics(attr, packet_size, duration))
 
     def _hop_overflow(self, packet_size: float, qualities: Mapping[str, Any]) -> float:
         return max(0.0, float(packet_size) - self._available_capacity(qualities))
@@ -449,6 +457,7 @@ class DistributedRouter:
                     "TransmissionDelay": 0.0,
                     "MaxCapacity": attr.get("MaxCapacity", 1.0),
                     "LeftCapacity": attr.get("LeftCapacity", attr.get("MaxCapacity", 1.0)),
+                    "RemainingCapacityRatio": attr.get("RemainingCapacityRatio", remaining_capacity_ratio(attr)),
                     "HeatValue": attr.get("HeatValue", 0.0),
                     "PacketLossRate": 1.0 if hops is None else 0.0,
                     "is_valid": hops is not None,
@@ -522,8 +531,10 @@ class DistributedRouter:
         src_sat_id = int(task["SrcSatId"])
         dest_sat_id = int(task["DestSatId"])
         packet_size = float(task.get("PacketSize", 1.0))
+        duration = float(task.get("Duration", 0.0))
         start_time = self._normalize_time(task.get("StartTime") or task.get("Timestamp"))
         max_hops = int(max_hops or self.routing_config.max_search_hops)
+        self._refresh_runtime_link_metrics(packet_size, duration)
 
         route_path = [src_sat_id]
         current_sat = src_sat_id

@@ -1,6 +1,7 @@
 import os
+import random
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
@@ -10,48 +11,90 @@ from src.simulation.engine import SimulationEngine
 import src.config as config
 
 
+class TeeOutput:
+    """同时输出到终端和文件的类"""
+    def __init__(self, filename):
+        self.terminal = sys.stdout
+        self.log_file = open(filename, 'w', encoding='utf-8')
+    
+    def write(self, message):
+        self.terminal.write(message)
+        self.terminal.flush()
+        self.log_file.write(message)
+        self.log_file.flush()
+    
+    def flush(self):
+        self.terminal.flush()
+        self.log_file.flush()
+    
+    def close(self):
+        self.log_file.close()
+
+
 def main():
-    selected_constellation_id = '3600'  # 可切换为 '432'
+    selected_constellation_id = "3600"  # can switch to "432"
     config.apply_constellation_config(selected_constellation_id)
     tle_file_path = config.TLE_FILE_PATH
 
     if not os.path.exists(tle_file_path):
-        print(f"[严重错误] 找不到 TLE 文件，请检查路径: {tle_file_path}")
-        print("请确保把文件放在了项目的 data/ 目录下！")
+        print(f"[Error] TLE file not found: {tle_file_path}")
+        print("Please put the TLE file under the project data directory.")
         return
 
-    # 仿真参数初始化
     constellation_id = config.CONSTELLATION_ID
-    start_timestamp = datetime(2026, 4, 24, 12, 0, 0)
-    # 示例任务列表（用于测试任务规划功能）
+    start_timestamp = datetime.now(timezone.utc)
     task_list = [
         {
             "TaskId": "Task_001",
             "TaskType": "Communication",
-            "SourceSatId": 0,           # 源卫星ID
-            "TargetSatId": 100,         # 目标卫星ID
-            "DemandGbps": 2.5,          # 带宽需求 2.5 Gbps
-            "Duration": 10,             # 持续10秒
-            "TaskPriority": 5,          # 优先级5
-            "arrival_sim_time": 0,  # 立即执行
+            "SourceGroundStationId": random.randint(10, 20),
+            "TargetGroundStationId": random.randint(70, 80),
+            "DemandGbps": 2.5,
+            "Duration": 10,
+            "TaskPriority": 5,
+            "arrival_sim_time": start_timestamp.isoformat(),
         },
     ]
 
+    simulation_duration = 300
 
-    print(f">>> 正在初始化仿真系统主控 (设置时长: {config.SIMULATION_DURATION}s)...")
+    # 创建日志目录
+    log_dir = os.path.join(PROJECT_ROOT, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # 生成日志文件名（包含时间戳）
+    timestamp_str = start_timestamp.strftime("%Y%m%d_%H%M%S")
+    log_filename = f"simulation_{constellation_id}_{timestamp_str}.log"
+    log_filepath = os.path.join(log_dir, log_filename)
+    
+    print(f">>> 日志文件: {log_filepath}")
+    print(f">>> Initializing simulation controller "
+          f"(duration: {simulation_duration}s)...")
 
-    # 实例化引擎
-    simulation_engine = SimulationEngine(constellation_id, config.SIMULATION_DURATION)
+    # 重定向标准输出到日志文件（同时保留终端输出）
+    tee_output = TeeOutput(log_filepath)
+    old_stdout = sys.stdout
+    sys.stdout = tee_output
+    
+    try:
+        simulation_engine = SimulationEngine(constellation_id, simulation_duration)
 
-    # 启动引擎
-    simulation_engine.run_simulation(
-        timestamp=start_timestamp,#此处的时间类型需要讨论，============================================================================
-        constellation_id=constellation_id,
-        tle_file_path=tle_file_path,
-        task_list=task_list
-    )
-    # # 接续运行24小时扩展仿真
-    # simulation_engine.run_extended_simulation()
+        simulation_engine.run_simulation(
+            timestamp=start_timestamp,
+            constellation_id=constellation_id,
+            tle_file_path=tle_file_path,
+            task_list=task_list,
+        )
+        # simulation_engine.run_extended_simulation()
+    except Exception as e:
+        print(f"\n[错误] 仿真过程中发生异常: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # 恢复标准输出
+        sys.stdout = old_stdout
+        tee_output.close()
+        print(f"\n>>> 仿真完成，日志已保存到: {log_filepath}")
 
 
 if __name__ == "__main__":

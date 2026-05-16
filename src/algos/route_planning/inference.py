@@ -13,6 +13,7 @@ route_planning 在线推理适配层。
 from __future__ import annotations
 
 import datetime as _dt
+import time
 from dataclasses import asdict, is_dataclass
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
@@ -26,6 +27,7 @@ from .routing_config import (
     resolve_model_profile,
     validate_route_planning_config,
 )
+from .delay_metrics import calculate_link_delay_metrics
 
 
 _ROUTER_CACHE: Dict[str, Any] = {}
@@ -294,6 +296,11 @@ def _build_task_dict(task: Any, timestamp_iso: str, constellation_id: str) -> Di
         ),
         "StartTime": _normalize_timestamp(_get(task, "StartTime", "ArrivalTime", default=timestamp_iso)),
         "TaskPriority": _to_int(_get(task, "TaskPriority", "Priority", default=0), "TaskPriority"),
+        "Duration": _to_float(
+            _get(task, "Duration", "duration", default=DEFAULT_DURATION),
+            default=DEFAULT_DURATION,
+            min_value=0.0,
+        ),
     }
 
 
@@ -312,10 +319,14 @@ def build_grlr_input(topology_state: Any, node_state: Any, task: Any) -> Dict[st
 
 def route_planning_inference(topology_state: Any, node_state: Any, task: Any) -> Dict[str, Any]:
     """总项目路由优化推理入口。"""
+
     grlr_input = build_grlr_input(topology_state, node_state, task)
     model_key = resolve_model_key(grlr_input["constellation_id"])
     model_profile = resolve_model_profile(model_key)
     router = get_router(model_key)
+
+    # 记录推理开始时间
+    start_time = time.time()
     result = router.route(
         topology=grlr_input["topology"],
         node_state=grlr_input["node_state"],
@@ -323,15 +334,91 @@ def route_planning_inference(topology_state: Any, node_state: Any, task: Any) ->
         max_hops=MAX_ROUTE_HOPS,
     )
 
+    # 获取模型生成的路径和拓扑字典
+    route_path = result.get("RoutePath") or result.get("route_path") or []
+    topology = grlr_input["topology"]
+
+    # 获取任务大小(Mbits) 和 需求带宽(Gbps)
+    packet_size_mbits = float(grlr_input["task"].get("PacketSize", DEFAULT_PACKET_SIZE))
+    duration = float(grlr_input["task"].get("Duration", DEFAULT_DURATION))
+
+    link_propagation_delays = []
+    link_queue_delays = []
+    link_transmission_delays = []
+    link_packet_losses = []
+
+    if len(route_path) > 1:
+        for i in range(len(route_path) - 1):
+            u, v = int(route_path[i]), int(route_path[i + 1])
+            link_attr = None
+
+            # 查找 u -> v 的链路属性
+            for neighbor_id, attr in topology.get(u, []):
+                if neighbor_id == v:
+                    link_attr = attr
+                    break
+
+            if link_attr:
+                metrics = calculate_link_delay_metrics(link_attr, packet_size_mbits, duration)
+                link_propagation_delays.append(float(link_attr.get("LinkPropagationDelay", 0.0)))
+                link_transmission_delays.append(metrics["TransmissionDelay"])
+                link_queue_delays.append(metrics["QueueDelay"])
+                link_packet_losses.append(metrics["PacketLossRate"])
+                # 预期流量 = 链路当前背景流量 + 本次任务预期分配的流量
+
+                # 1. 传输时延 (ms): 数据量(Mbits) / 链路容量(Gbps) 刚好等于 ms
+
+                # 2. 排队时延 (ms): 基于 M/M/1 队列模型近似
+
+                # 3. 单跳丢包率: 负载超过 80% 时开始丢包
+            else:
+                # 兜底：未找到链路属性时填0
+                link_propagation_delays.append(0.0)
+                link_transmission_delays.append(0.0)
+                link_queue_delays.append(0.0)
+                link_packet_losses.append(0.0)
+
+    # 添加推理时间信息
+    inference_time = time.time() - start_time
+    result["InferenceTimeSeconds"] = inference_time
+    # 将计算结果写入 result 字典（现为逐跳链路的列表）
+    result["PathQueueDelay"] = link_queue_delays
+    result["PathTransmissionDelay"] = link_transmission_delays
+    result["PathPacketLossRate"] = link_packet_losses
+    result["PathPropagationDelay"] = link_propagation_delays
+
+    if len(route_path) > 1:
+        end_to_end_delay = (
+            sum(link_propagation_delays)
+            + sum(link_queue_delays)
+            + sum(link_transmission_delays)
+        )
+        result["EndToEndDelay"] = float(end_to_end_delay)
+        result["end_to_end_delay_ms"] = float(end_to_end_delay)
+        result["EndTime"] = _estimate_end_time(
+            result.get("StartTime", grlr_input["task"].get("StartTime")),
+            end_to_end_delay,
+        )
+
     result["ModelKey"] = model_key
     result["ConstellationSize"] = model_profile.constellation_size
     result["ModelWeightPath"] = str(model_profile.model_path)
     result["flow_size"] = float(grlr_input["task"].get("PacketSize", DEFAULT_PACKET_SIZE))
-    result["duration"] = int(_get(task, "Duration", "duration", default=DEFAULT_DURATION))
+    result["duration"] = duration
     result["timestamp"] = grlr_input["timestamp"]
     result["src_sat_id"] = grlr_input["task"]["SrcSatId"]
     result["dest_sat_id"] = grlr_input["task"]["DestSatId"]
     return result
+
+
+def _estimate_end_time(start_time: Any, delay_ms: float) -> Any:
+    try:
+        dt = _dt.datetime.fromisoformat(str(start_time))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_dt.timezone.utc)
+        return (dt + _dt.timedelta(milliseconds=float(delay_ms))).astimezone(_dt.timezone.utc).isoformat()
+    except Exception:
+        return start_time
 
 
 def reset_router_cache() -> None:

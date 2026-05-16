@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 import time
@@ -104,6 +105,7 @@ def task_planning_inference(
     """
 
     decision_t0 = time.perf_counter()
+    task = dict(task or {})
 
     try:
         constellation_key = normalize_constellation(constellation)
@@ -116,22 +118,38 @@ def task_planning_inference(
         )
 
     task_id = task.get("TaskId", "unknown_task")
-    src = task.get("SourceSatId")
-    dst = task.get("TargetSatId")
+    src_ground_station_id = task.get("SourceGroundStationId")
+    dst_ground_station_id = task.get("TargetGroundStationId")
 
     try:
         demand_gbps = float(task.get("DemandGbps", 0.0))
     except (TypeError, ValueError):
         demand_gbps = 0.0
 
-    if src is None or dst is None:
+    if src_ground_station_id is None or dst_ground_station_id is None:
         return _fail(
             task=task,
-            reason="missing SourceSatId or TargetSatId",
+            reason="missing SourceGroundStationId or TargetGroundStationId",
             constellation=constellation_key,
             demand_gbps=demand_gbps,
             decision_t0=decision_t0,
         )
+
+    src, src_reason = _satellite_for_ground_station(node_state, src_ground_station_id)
+    dst, dst_reason = _satellite_for_ground_station(node_state, dst_ground_station_id)
+
+    if src is None or dst is None:
+        missing_reason = src_reason if src is None else dst_reason
+        return _fail(
+            task=task,
+            reason=missing_reason,
+            constellation=constellation_key,
+            demand_gbps=demand_gbps,
+            decision_t0=decision_t0,
+        )
+
+    task["SourceSatId"] = src
+    task["TargetSatId"] = dst
 
     if demand_gbps <= 0:
         return _fail(
@@ -141,9 +159,6 @@ def task_planning_inference(
             demand_gbps=demand_gbps,
             decision_t0=decision_t0,
         )
-
-    src_str = str(src)
-    dst_str = str(dst)
 
     # 1. 状态对象转算法图。
     G = build_graph_from_simulation_state(
@@ -222,12 +237,22 @@ def task_planning_inference(
         )
 
     # 4. 补充每条路径占用时间。
-    start_time = float(task.get("arrival_sim_time", 0.0) or 0.0)
+    try:
+        start_datetime = _parse_iso8601_datetime(task.get("arrival_sim_time"))
+    except (TypeError, ValueError) as exc:
+        return _fail(
+            task=task,
+            reason=f"invalid arrival_sim_time: {exc}",
+            constellation=constellation_key,
+            demand_gbps=demand_gbps,
+            decision_t0=decision_t0,
+        )
     allocations = add_allocation_times(
         G=G,
         allocations=allocations,
-        start_time=start_time,
+        start_time=0.0,
     )
+    allocations = _format_allocation_times_iso8601(allocations, start_datetime)
 
     # 5. 容量校验与指标计算。
     capacity_ok, capacity_reason, capacity_detail = validate_allocations_capacity(
@@ -254,32 +279,132 @@ def task_planning_inference(
         )
 
     return {
-        "accepted": True,
-        "reason": "",
-        "constellation": constellation_key,
-
         "task_id": task_id,
-        "src": src_str,
-        "dst": dst_str,
+        "constellation": constellation_key,
+        "src": _task_endpoint_for_output(src_ground_station_id),
+        "dst": _task_endpoint_for_output(dst_ground_station_id),
         "demand_gbps": demand_gbps,
-
-        "decision_total_ms": decision_total_ms,
-
-        "paths": [item["path"] for item in allocations],
-        "ratios": [float(item["ratio"]) for item in allocations],
-        "allocations": allocations,
-
+        "reason": "",
         "avg_delay_ms": float(network_metrics.get("avg_delay_ms", 0.0)),
+        "capacity_max_util_after": float(capacity_detail.get("max_utilization_after", 0.0)),
+        "capacity_status": "OK",
+        "capacity_total_overflow": float(capacity_detail.get("total_overflow", 0.0)),
+        "decision_total_ms": decision_total_ms,
         "jitter_ms": float(network_metrics.get("jitter_ms", 0.0)),
         "max_link_utilization_after": float(
             network_metrics.get("max_link_utilization_after", 0.0)
         ),
         "overflow_amount": float(network_metrics.get("overflow_amount", 0.0)),
-
-        "capacity_status": "OK",
-        "capacity_total_overflow": float(capacity_detail.get("total_overflow", 0.0)),
-        "capacity_max_util_after": float(capacity_detail.get("max_utilization_after", 0.0)),
+        "allocations": allocations,
     }
+
+
+def _satellite_for_ground_station(
+    node_state: SatelliteNodeState | None,
+    ground_station_id: Any,
+) -> tuple[str | None, str]:
+    if node_state is None or not getattr(node_state, "sat_list", None):
+        return None, "node_state is required to map ground station to satellite"
+
+    try:
+        expected_ground_station_id = int(ground_station_id)
+    except (TypeError, ValueError):
+        return None, f"invalid ground station id: {ground_station_id}"
+
+    for sat_id, node_attr in node_state.sat_list.items():
+        station_numbers = getattr(node_attr, "ground_station_number", None)
+        if station_numbers is None and isinstance(node_attr, dict):
+            station_numbers = node_attr.get("GroundStationNumber")
+            if station_numbers is None:
+                station_numbers = node_attr.get("ground_station_number")
+
+        for station_number in _ground_station_numbers(station_numbers):
+            if station_number == expected_ground_station_id:
+                return str(sat_id), ""
+
+    return (
+        None,
+        f"ground station {expected_ground_station_id} is not assigned to any satellite",
+    )
+
+
+def _ground_station_numbers(value: Any) -> list[int]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        items = value
+    else:
+        items = (value,)
+
+    station_numbers: list[int] = []
+    for item in items:
+        try:
+            station_number = int(item)
+        except (TypeError, ValueError):
+            continue
+        if station_number > 0:
+            station_numbers.append(station_number)
+    return station_numbers
+    
+    #     station_number = getattr(node_attr, "ground_station_number", None)
+    #     if station_number is None and isinstance(node_attr, dict):
+    #         station_number = node_attr.get("GroundStationNumber")
+    #         if station_number is None:
+    #             station_number = node_attr.get("ground_station_number")
+
+    #     try:
+    #         station_number = int(station_number)
+    #     except (TypeError, ValueError):
+    #         continue
+
+    #     if station_number == expected_ground_station_id:
+    #         return str(sat_id), ""
+
+    # return (
+    #     None,
+    #     f"ground station {expected_ground_station_id} is not assigned to any satellite",
+    # )
+
+
+def _parse_iso8601_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+    else:
+        dt = datetime.now(timezone.utc)
+
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _format_allocation_times_iso8601(
+    allocations: list[Dict[str, Any]],
+    start_datetime: datetime,
+) -> list[Dict[str, Any]]:
+    result: list[Dict[str, Any]] = []
+
+    for allocation in allocations:
+        item = dict(allocation)
+        start_offset = float(item.get("start_time", 0.0) or 0.0)
+        end_offset = float(item.get("end_time", start_offset) or start_offset)
+        duration_ms = max(0.0, end_offset - start_offset)
+
+        item["start_time"] = start_datetime.isoformat()
+        item["end_time"] = (
+            start_datetime + timedelta(milliseconds=duration_ms)
+        ).isoformat()
+        result.append(item)
+
+    return result
+
+
+def _task_endpoint_for_output(value: Any) -> str | None:
+    return None if value is None else str(value)
 
 
 def _fail(
@@ -309,29 +434,22 @@ def _fail(
         except (TypeError, ValueError):
             demand_gbps = 0.0
 
+    constellation_key = None if constellation is None else str(constellation)
+
     return {
-        "accepted": False,
-        "reason": reason,
-        "constellation": None if constellation is None else str(constellation),
-        "actor_model_path": None,
-
         "task_id": task.get("TaskId", "unknown_task"),
-        "src": None if task.get("SourceSatId") is None else str(task.get("SourceSatId")),
-        "dst": None if task.get("TargetSatId") is None else str(task.get("TargetSatId")),
+        "constellation": constellation_key,
+        "src": _task_endpoint_for_output(task.get("SourceGroundStationId")),
+        "dst": _task_endpoint_for_output(task.get("TargetGroundStationId")),
         "demand_gbps": float(demand_gbps),
-
-        "decision_total_ms": float(decision_total_ms),
-
-        "paths": [],
-        "ratios": [],
-        "allocations": [],
-
+        "reason": reason,
         "avg_delay_ms": network_metrics.get("avg_delay_ms"),
+        "capacity_max_util_after": capacity_detail.get("max_utilization_after"),
+        "capacity_status": "FAILED",
+        "capacity_total_overflow": capacity_detail.get("total_overflow"),
+        "decision_total_ms": float(decision_total_ms),
         "jitter_ms": network_metrics.get("jitter_ms"),
         "max_link_utilization_after": network_metrics.get("max_link_utilization_after"),
         "overflow_amount": network_metrics.get("overflow_amount"),
-
-        "capacity_status": "FAILED",
-        "capacity_total_overflow": capacity_detail.get("total_overflow"),
-        "capacity_max_util_after": capacity_detail.get("max_utilization_after"),
+        "allocations": [],
     }

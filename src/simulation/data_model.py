@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Dict, List
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 # --- 卫星节点状态定义 ---
 class NodeAttribute(BaseModel):
@@ -11,6 +11,16 @@ class NodeAttribute(BaseModel):
     energy_ratio: float = Field(1.0, alias="EnergyRatio")   
     congestion: float = Field(0.0, alias="Congestion")      
     heat_flow: float = Field(0.0, alias="HeatFlow")  
+    ground_station_number: List[int] = Field(default_factory=list, alias="GroundStationNumber")
+
+    @field_validator("ground_station_number", mode="before")
+    @classmethod
+    def _normalize_ground_station_number(cls, value):
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple, set)):
+            return list(value)
+        return [value]
 
 @dataclass
 class SatelliteNodeState:

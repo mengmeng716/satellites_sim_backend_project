@@ -12,12 +12,12 @@ from .inference import task_planning_inference
 
 REQUIRED_TASK_FIELDS = (
     "TaskId",
-    "TaskType",
-    "SourceSatId",
-    "TargetSatId",
+    "SourceGroundStationId",
+    "TargetGroundStationId",
     "DemandGbps",
     "Duration",
     "TaskPriority",
+    "arrival_sim_time",
 )
 
 
@@ -98,28 +98,19 @@ def _fail_before_inference(
         demand_gbps = 0.0
 
     return {
-        "accepted": False,
-        "reason": reason,
-        "constellation": None if constellation is None else str(constellation),
-        "actor_model_path": None,
-
         "task_id": task.get("TaskId", "unknown_task"),
-        "src": task.get("SourceSatId"),
-        "dst": task.get("TargetSatId"),
+        "constellation": None if constellation is None else str(constellation),
+        "src": None if task.get("SourceGroundStationId") is None else str(task.get("SourceGroundStationId")),
+        "dst": None if task.get("TargetGroundStationId") is None else str(task.get("TargetGroundStationId")),
         "demand_gbps": demand_gbps,
-
-        "decision_total_ms": 0.0,
-
-        "paths": [],
-        "ratios": [],
-        "allocations": [],
-
+        "reason": reason,
         "avg_delay_ms": None,
+        "capacity_max_util_after": None,
+        "capacity_status": "FAILED",
+        "capacity_total_overflow": None,
+        "decision_total_ms": 0.0,
         "jitter_ms": None,
         "max_link_utilization_after": None,
         "overflow_amount": None,
-
-        "capacity_status": "FAILED",
-        "capacity_total_overflow": None,
-        "capacity_max_util_after": None,
+        "allocations": [],
     }

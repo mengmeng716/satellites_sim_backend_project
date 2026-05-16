@@ -1,101 +1,88 @@
-"""Core-node selection based on nearest visible satellites to ground stations."""
+"""Core-node selection from node-state GroundStationNumber."""
 
 from __future__ import annotations
 
 import random
-from math import radians, sin
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-import numpy as np
-
-from .adapters import PositionMap
-from src import config as simulation_config
-from src.utils.gs_manager import GroundStationManager
+from src.utils.source_destination_constraint import check_src_dst_distance_constraint
 
 
 Pair = Tuple[int, int]
 
 
-def _satellite_ecef_km(
-    latitude_deg: float,
-    longitude_deg: float,
-    orbit_height_km: float,
-) -> np.ndarray:
-    radius = float(simulation_config.EARTH_RADIUS_KM) + float(orbit_height_km)
-    phi = radians(latitude_deg)
-    lam = radians(longitude_deg)
-    return np.array(
-        [
-            radius * np.cos(phi) * np.cos(lam),
-            radius * np.cos(phi) * np.sin(lam),
-            radius * np.sin(phi),
-        ],
-        dtype=float,
-    )
+def _read_value(obj: Any, names: Sequence[str], default: Any = None) -> Any:
+    if isinstance(obj, Mapping):
+        for name in names:
+            if name in obj:
+                return obj[name]
+    elif obj is not None:
+        for name in names:
+            if hasattr(obj, name):
+                return getattr(obj, name)
+    return default
 
 
-def _is_visible_from_ground(
-    ground_ecef_km: np.ndarray,
-    satellite_ecef_km: np.ndarray,
-    min_elevation_deg: float = 0.0,
-) -> bool:
-    """Return whether the satellite is above the local horizon.
+def _raw_sat_list(node_state: Any) -> Mapping[Any, Any]:
+    if hasattr(node_state, "sat_list"):
+        return node_state.sat_list or {}
+    if isinstance(node_state, Mapping):
+        return node_state.get("SatList") or node_state.get("sat_list") or {}
+    return {}
 
-    The horizon check uses the line-of-sight vector projected on the ground
-    station zenith direction. ``min_elevation_deg=0`` means geometric horizon.
+
+def _ground_station_numbers(value: Any) -> List[int]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        items = value
+    else:
+        items = (value,)
+
+    station_ids: List[int] = []
+    for item in items:
+        try:
+            station_id = int(item)
+        except (TypeError, ValueError):
+            continue
+        if station_id > 0:
+            station_ids.append(station_id)
+    return station_ids
+
+
+def get_current_core_nodes(node_state: Any) -> Tuple[List[int], ...]:
+    """Return CoreNodeNumber by reading node-state GroundStationNumber.
+
+    GroundStationNumber is refreshed by the simulation engine before each
+    topology reconstruction, so this function must not recalculate nearest
+    ground-station satellites.
     """
-    los = satellite_ecef_km - ground_ecef_km
-    los_norm = float(np.linalg.norm(los))
-    ground_norm = float(np.linalg.norm(ground_ecef_km))
-    if los_norm <= 0.0 or ground_norm <= 0.0:
-        return False
-
-    zenith = ground_ecef_km / ground_norm
-    sin_elevation = float(np.dot(los, zenith) / los_norm)
-    return sin_elevation >= sin(radians(min_elevation_deg))
-
-
-def get_current_core_nodes(
-    positions: PositionMap,
-    orbit_height_km: float,
-    min_elevation_deg: float = 0.0,
-) -> Tuple[List[int], ...]:
-    """Return CoreNodeNumber: each satellite maps to covered ground-station ids.
-
-    This mirrors ``Topology_Reconfiguration_Module.core_node.get_current_core_nodes``,
-    but uses the current project's cached ground-station coordinates and filters
-    out satellites below the ground-station horizon.
-    """
-    if not positions:
+    sat_list = _raw_sat_list(node_state)
+    if not sat_list:
         return tuple()
 
-    manager = GroundStationManager()
-    ground_ecef = manager.get_ecef_coordinates()
-    if ground_ecef is None or len(ground_ecef) == 0:
+    valid_sat_ids: List[int] = []
+    for raw_sat_id in sat_list:
+        try:
+            valid_sat_ids.append(int(raw_sat_id))
+        except (TypeError, ValueError):
+            continue
+
+    if not valid_sat_ids:
         return tuple()
 
-    sat_vectors = {
-        sat_id: _satellite_ecef_km(lat, lon, orbit_height_km)
-        for sat_id, (lat, lon) in positions.items()
-    }
-    max_sat_id = max(sat_vectors) if sat_vectors else -1
-    core_node_list: List[List[int]] = [[] for _ in range(max_sat_id + 1)]
+    core_node_list: List[List[int]] = [[] for _ in range(max(valid_sat_ids) + 1)]
+    for raw_sat_id, sat_data in sat_list.items():
+        try:
+            sat_id = int(raw_sat_id)
+        except (TypeError, ValueError):
+            continue
 
-    for station_index, station_ecef in enumerate(ground_ecef, start=1):
-        nearest_sat_id: Optional[int] = None
-        nearest_distance = float("inf")
-
-        station_vec = np.asarray(station_ecef, dtype=float)
-        for sat_id, sat_vec in sat_vectors.items():
-            if not _is_visible_from_ground(station_vec, sat_vec, min_elevation_deg):
-                continue
-            distance = float(np.linalg.norm(sat_vec - station_vec))
-            if distance < nearest_distance:
-                nearest_distance = distance
-                nearest_sat_id = sat_id
-
-        if nearest_sat_id is not None:
-            core_node_list[nearest_sat_id].append(station_index)
+        station_number = _read_value(
+            sat_data,
+            ("GroundStationNumber", "ground_station_number"),
+        )
+        core_node_list[sat_id].extend(_ground_station_numbers(station_number))
 
     return tuple(core_node_list)
 
@@ -120,17 +107,92 @@ def build_source_destination_pairs(
     return pairs
 
 
+def get_top_business_demand_core_satellite_ids(
+    satellite_business_intensity: Mapping[int, float],
+    core_node_count: int,
+    candidate_satellite_ids: Optional[Iterable[int]] = None,
+) -> List[int]:
+    """Return satellites with the highest normalized business demand intensity."""
+    ranked_satellites: List[Tuple[int, float]] = []
+    if candidate_satellite_ids is None:
+        for raw_sat_id, intensity in satellite_business_intensity.items():
+            try:
+                ranked_satellites.append((int(raw_sat_id), float(intensity)))
+            except (TypeError, ValueError):
+                continue
+    else:
+        candidate_ids = set()
+        for raw_sat_id in candidate_satellite_ids:
+            try:
+                candidate_ids.add(int(raw_sat_id))
+            except (TypeError, ValueError):
+                continue
+        for sat_id in candidate_ids:
+            ranked_satellites.append(
+                (sat_id, float(satellite_business_intensity.get(sat_id, 0.0)))
+            )
+
+    ranked_satellites.sort(key=lambda item: (-item[1], item[0]))
+    return [sat_id for sat_id, _ in ranked_satellites[: max(0, int(core_node_count))]]
+
+
+def build_business_demand_source_destination_pairs(
+    node_state: Any,
+    satellite_business_intensity: Mapping[int, float],
+    core_node_count: int,
+    ordered: bool = False,
+) -> List[Pair]:
+    """Build all constrained pairs from top business-demand core satellites."""
+    ground_station_core_ids = get_core_satellite_ids(get_current_core_nodes(node_state))
+    core_ids = get_top_business_demand_core_satellite_ids(
+        satellite_business_intensity,
+        core_node_count,
+        candidate_satellite_ids=ground_station_core_ids,
+    )
+    pairs = build_source_destination_pairs(core_ids, ordered=ordered)
+    return sorted(
+        (source_id, target_id)
+        for source_id, target_id in pairs
+        if check_src_dst_distance_constraint(node_state, source_id, target_id)
+    )
+
+
 def build_random_source_destination_pairs(
+    node_state: Any,
     core_satellite_ids: Iterable[int],
     pair_count: int = 100,
     seed: Optional[int] = None,
 ) -> List[Pair]:
-    """Sample unordered source-destination pairs without reverse duplicates."""
-    pairs = build_source_destination_pairs(core_satellite_ids, ordered=False)
-    if pair_count <= 0 or len(pairs) <= pair_count:
-        return pairs
-
+    """Sample unordered source-destination pairs with distance constraint.
+    
+    生成的卫星对会经过经纬度差异约束检查，避免选择过近的卫星作为源-目的对。
+    
+    :param node_state: 节点状态对象，用于获取卫星经纬度信息
+    :param core_satellite_ids: 核心卫星 ID 列表
+    :param pair_count: 需要生成的配对数量
+    :param seed: 随机种子（用于可复现性）
+    :return: 满足距离约束的 (源ID, 目的ID) 对列表
+    """
+    # 首先构建所有可能的候选对
+    all_pairs = build_source_destination_pairs(core_satellite_ids, ordered=False)
+    
+    # 过滤出满足距离约束的配对
+    valid_pairs = []
+    for src_id, dst_id in all_pairs:
+        if check_src_dst_distance_constraint(node_state, src_id, dst_id):
+            valid_pairs.append((src_id, dst_id))
+    
+    # 如果有效配对数量不足，返回全部（并给出警告）
+    if not valid_pairs:
+        print(f"[警告] 没有满足经纬度差异约束的卫星对，返回空列表")
+        return []
+    
+    if len(valid_pairs) <= pair_count:
+        print(f"[提示] 满足约束的候选对数量 ({len(valid_pairs)}) 少于请求数量 ({pair_count})，返回全部")
+        return sorted(valid_pairs)
+    
+    # 随机采样指定数量的配对
     rng = random.Random(seed)
-    return sorted(rng.sample(pairs, pair_count))
-
-
+    selected_pairs = rng.sample(valid_pairs, pair_count)
+    
+    return sorted(selected_pairs)
