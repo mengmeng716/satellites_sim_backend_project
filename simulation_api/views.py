@@ -77,12 +77,27 @@ class SubmitPlanningTaskView(APIView):
                 return Response({
                     "error": f"星座 {constellation_id} 的仿真进程未启动，请先开启对应的仿真开关"
                 }, status=status.HTTP_400_BAD_REQUEST)
+                
 
             engine = GLOBAL_ENGINES[sim_id]
                 
             print(f">>> [API] 收到前端规划请求，星座: {constellation_id}，任务数量: {len(task_list)}")
+            print(f">>> [API] 前端下发的任务参数详情: {task_list}")
+            # 字段映射（加在 views.py 准备 push 之前）
+            formatted_task_list = []
+            for t in task_list:
+                formatted_task_list.append({
+                    "TaskId": t.get("task_id", ""),
+                    "SourceGroundStationId": t.get("src_sat_id", 0),  # 具体看你需要的是 Source 还是 SourceNode
+                    "TargetGroundStationId": t.get("dest_sat_id", 0),
+                    "DemandGbps": t.get("demand_gbps", 0.0),
+                    "ArrivalTime": t.get("arrival_time", ""),
+                    "Duration": t.get("duration", 0),
+                    "DelayBudget": t.get("delay_budget", 0),
+                    "TaskPriority": t.get("task_priority", 0)
+                })
             # 直接将前端标准的 task_list 推入该实例的事件循环处理队列中
-            engine.receive_backend_task_planning({"TaskList": task_list})
+            engine.receive_backend_task_planning({"TaskList": formatted_task_list})
             msg = f"成功将 {len(task_list)} 个任务推入 {constellation_id} 的仿真引擎处理队列"
             
             return Response({
@@ -117,6 +132,9 @@ class SimulationControlView(APIView):
                 
                 print(f">>> [API] 手动启动拉起仿真系统: {sim_id}")
                 import src.config as config
+                
+                # 动态应用前端传来的星座参数配置
+                config.apply_constellation_config(constellation_id)
                 
                 # 建立新引擎实例化
                 engine = SimulationEngine(constellation_id, 3600)

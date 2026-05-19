@@ -610,25 +610,8 @@ class SimulationEngine:
         with self.task_queue_lock:
             remaining_tasks = []
             for task in self.task_queue:
-                if "arrival_sim_time" in task:
-                    arrival_sim_time = self._task_arrival_sim_seconds(task)
-                else:
-                    arrival_utc = task.get("ArrivalTime")
-                    if arrival_utc is None:
-                        arrival_sim_time = 0
-                    elif isinstance(arrival_utc, datetime.datetime) and self.sim_start_utctime is not None:
-                        start_utc = self.sim_start_utctime
-                        if arrival_utc.tzinfo is None and start_utc.tzinfo is not None:
-                            arrival_utc = arrival_utc.replace(tzinfo=datetime.timezone.utc)
-                        elif arrival_utc.tzinfo is not None and start_utc.tzinfo is None:
-                            start_utc = start_utc.replace(tzinfo=datetime.timezone.utc)
-                        delta = (arrival_utc - start_utc).total_seconds()
-                        arrival_sim_time = max(0, delta)
-                    else:
-                        print(f"[{self.current_time}s] [警告] 任务 {task.get('TaskId')} 的 ArrivalTime "
-                              f"格式无法解析 ({type(arrival_utc).__name__})，将立即执行。")
-                        arrival_sim_time = 0
-                    task["arrival_sim_time"] = arrival_sim_time
+                arrival_sim_time = self._task_arrival_sim_seconds(task)
+                task["arrival_sim_time"] = arrival_sim_time
 
                 if self.current_time >= arrival_sim_time:
                     tasks_to_execute.append(task)
@@ -684,6 +667,11 @@ class SimulationEngine:
                 c_id = self.topology_state.constellation_id
                 t_ms = self.topology_state.timestamp
                 
+                # 【新增】周期性(如每 15 仿真秒)强制清空一次哈希缓存下发全量，解决前端中途重连后链路丢失的问题
+                if getattr(self, "_last_full_sync_tick", -1) != (self.current_time // 15):
+                    self._last_notified_links.clear()
+                    self._last_full_sync_tick = self.current_time // 15
+
                 link_list = []
                 delta_links = []
                 for src_id, links in self.topology_state.new_topology.items():
@@ -1993,6 +1981,16 @@ class SimulationEngine:
                 print(f"[_micro_loop] 微周期执行期间发生异常: {e}")
             finally:
                 self._micro_done.set()
+
+
+    def stop(self):
+        """安全停止仿真引擎。"""
+        print(f"[{self.current_time}s] [Engine] 接收到终止指令，正在关闭...")
+        self._stop_event.set()
+        self._macro_event.set()
+        self._micro_event.set()
+        if hasattr(self, 'task_executor') and self.task_executor:
+            self.task_executor.shutdown(wait=False)
 
     def run_simulation(self, timestamp, constellation_id, tle_file_path, task_list):
         print("====== 仿真开始: 初始化阶段 ======")
