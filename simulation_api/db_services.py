@@ -7,7 +7,7 @@ from django.db.models import Avg
 
 os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = "true"
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from datetime import timezone as dt_timezone
 from dateutil.parser import parse
 from django.utils import timezone
@@ -263,12 +263,50 @@ def save_planning_demands(constellation_id, task_list):
 
     if not task_list:
         return
+
+    def _coerce_arrival_datetime(task):
+        """Coerce task arrival time into timezone-aware datetime for DB storage."""
+        raw_value = task.get("ArrivalTime")
+        if raw_value in (None, ""):
+            raw_value = task.get("arrival_sim_time")
+
+        if raw_value in (None, ""):
+            print(
+                f"[save_planning_demands] task {task.get('TaskId')} missing arrival time; "
+                "fallback to timezone.now()."
+            )
+            return timezone.now()
+
+        if isinstance(raw_value, datetime):
+            dt = raw_value
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=dt_timezone.utc)
+            return dt.astimezone(dt_timezone.utc)
+
+        if isinstance(raw_value, (int, float)):
+            ts = float(raw_value)
+            # Heuristic: very large numbers are usually Unix milliseconds.
+            if ts > 1e10:
+                ts = ts / 1000.0
+            # Small numeric values are treated as relative sim-seconds offset.
+            elif ts < 1e7:
+                return timezone.now() + timedelta(seconds=max(0.0, ts))
+            return datetime.fromtimestamp(ts, tz=dt_timezone.utc)
+
+        try:
+            return parse(str(raw_value))
+        except Exception as exc:
+            print(
+                f"[save_planning_demands] task {task.get('TaskId')} arrival parse failed "
+                f"(value={raw_value}, error={exc}); fallback to timezone.now()."
+            )
+            return timezone.now()
+
         
     demands_to_insert = []
     
     for task in task_list:
-        # 解析时间字符串（如果不为空）
-        arr_time_str = task.get("arrival_sim_time")
+        arrival_dt = _coerce_arrival_datetime(task)
         
         demands_to_insert.append(
             PlanningTaskDemand(
@@ -280,7 +318,7 @@ def save_planning_demands(constellation_id, task_list):
                 demand_gbps=task.get("DemandGbps", 0.0),
                 duration=task.get("Duration", 0.0),
                 task_priority=task.get("TaskPriority", 5),
-                arrival_sim_time=parse(arr_time_str) if arr_time_str else None,
+                arrival_sim_time=arrival_dt,
             )
         )
         

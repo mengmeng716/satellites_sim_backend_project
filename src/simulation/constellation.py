@@ -69,8 +69,16 @@ class SatelliteInfo:
         x, y, z = pos
         r = np.sqrt(x ** 2 + y ** 2 + z ** 2)
         lat = np.degrees(np.arcsin(z / r))
-        lon = np.degrees(np.arctan2(y, x)) - (jd + fr - 2451545.0) * 360.9856473668683
-        lon = lon % 360
+        d = jd + fr - 2451545.0
+        t_gmst = d / 36525.0
+        gmst = (
+            280.46061837
+            + 360.98564736629 * d
+            + 0.000387933 * t_gmst ** 2
+            - t_gmst ** 3 / 38710000.0
+        )
+        lon = np.degrees(np.arctan2(y, x)) - (gmst % 360)
+        lon = (lon + 180) % 360 - 180
         if lon > 180:
             lon -= 360
 

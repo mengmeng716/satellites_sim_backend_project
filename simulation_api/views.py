@@ -1,5 +1,6 @@
 import threading
 import uuid
+import logging
 from django.utils import timezone
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -18,6 +19,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 import json
+
+logger = logging.getLogger(__name__)
 
 # class SubmitPlanningTaskView(APIView):
 #     """
@@ -67,22 +70,49 @@ class SubmitPlanningTaskView(APIView):
         task_list = request.data.get('task_list', [])
         
         if not task_list:
-            return Response({"error": "task_list 不能为空"}, status=status.HTTP_400_BAD_REQUEST)
+            logger.warning(
+                "[SubmitPlanningTask] reject empty task_list | constellation_id=%s | payload_keys=%s",
+                constellation_id,
+                list(request.data.keys()) if hasattr(request.data, 'keys') else []
+            )
+            return Response(
+                {
+                    "error": "task_list 不能为空",
+                    "error_code": "EMPTY_TASK_LIST"
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
         
         try:
             # 根据 constellation_id 定位对应的全局引擎实例
             sim_id = f"sim_{constellation_id}"
             
             if sim_id not in GLOBAL_ENGINES:
+                available_simulations = list(GLOBAL_ENGINES.keys())
+                logger.warning(
+                    "[SubmitPlanningTask] engine not started | requested=%s | available=%s",
+                    sim_id,
+                    available_simulations,
+                )
                 return Response({
-                    "error": f"星座 {constellation_id} 的仿真进程未启动，请先开启对应的仿真开关"
+                    "error": f"星座 {constellation_id} 的仿真进程未启动，请先开启对应的仿真开关",
+                    "error_code": "SIM_ENGINE_NOT_STARTED",
+                    "requested_simulation_id": sim_id,
+                    "available_simulations": available_simulations,
                 }, status=status.HTTP_400_BAD_REQUEST)
                 
 
             engine = GLOBAL_ENGINES[sim_id]
                 
-            print(f">>> [API] 收到前端规划请求，星座: {constellation_id}，任务数量: {len(task_list)}")
-            print(f">>> [API] 前端下发的任务参数详情: {task_list}")
+            logger.info(
+                ">>> [API] 收到前端规划请求，星座: %s，任务数量: %s",
+                constellation_id,
+                len(task_list)
+            )
+            logger.debug(
+                ">>> [API] 前端下发的任务参数详情(最多3条预览): %s",
+                task_list[:3]
+            )
             # 字段映射（加在 views.py 准备 push 之前）
             formatted_task_list = []
             for t in task_list:
@@ -107,6 +137,7 @@ class SubmitPlanningTaskView(APIView):
             }, status=status.HTTP_201_CREATED)
             
         except Exception as e:
+            logger.exception("[SubmitPlanningTask] unexpected error: %s", e)
             return Response({"error": f"任务提交异常: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -130,7 +161,7 @@ class SimulationControlView(APIView):
                 if sim_id in GLOBAL_ENGINES:
                     return Response({"message": f"星座 {constellation_id} 的仿真系统已在运行中"}, status=status.HTTP_200_OK)
                 
-                print(f">>> [API] 手动启动拉起仿真系统: {sim_id}")
+                logger.info(">>> [API] 手动启动拉起仿真系统: %s", sim_id)
                 import src.config as config
                 
                 # 动态应用前端传来的星座参数配置
@@ -168,11 +199,11 @@ class SimulationControlView(APIView):
                             task_list=[] 
                         )
                     except Exception as ex:
-                        print(f">>> [Engine] 运行异常退起: {ex}")
+                        logger.exception(">>> [Engine] 运行异常退起: %s", ex)
                     finally:
                         if sim_id in GLOBAL_ENGINES and GLOBAL_ENGINES[sim_id] == e:
                             del GLOBAL_ENGINES[sim_id]
-                            print(f">>> [Engine] 自动释放引擎资源: {sim_id}")
+                            logger.info(">>> [Engine] 自动释放引擎资源: %s", sim_id)
                             
                 thread = threading.Thread(target=run_engine_background, args=(engine, constellation_id))
                 thread.daemon = True
@@ -188,12 +219,13 @@ class SimulationControlView(APIView):
                         engine.stop()
                     
                     del GLOBAL_ENGINES[sim_id]
-                    print(f">>> [API] 手动终止仿真系统: {sim_id}")
+                    logger.info(">>> [API] 手动终止仿真系统: %s", sim_id)
                     return Response({"message": f"星座 {constellation_id} 仿真已停止"}, status=status.HTTP_200_OK)
                 else:
                     return Response({"message": "仿真未运行，无需停止"}, status=status.HTTP_200_OK)
                     
         except Exception as e:
+            logger.exception("[SimulationControl] error: %s", e)
             return Response({"error": f"仿真控制异常: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
