@@ -60,10 +60,19 @@ class ReadWriteLock:
 
 
 class SimulationEngine:
-    def __init__(self, constellation_id, duration_seconds):
+    def __init__(self, constellation_id, duration_seconds, micro_period_seconds=None):
         self.constellation_id = constellation_id
         self.duration = duration_seconds
         self.current_time = 0
+
+        if micro_period_seconds not in (None, ""):
+            try:
+                micro_period_seconds = int(micro_period_seconds)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("micro_period_seconds must be one of 1, 2, 3, 4, 5") from exc
+            if micro_period_seconds not in (1, 2, 3, 4, 5):
+                raise ValueError("micro_period_seconds must be one of 1, 2, 3, 4, 5")
+            config.MICRO_PERIOD_SECONDS = micro_period_seconds
 
         # 初始化后端回调接口为空，防止报错
         self.backend_callback = None

@@ -145,7 +145,7 @@ class SimulationControlView(APIView):
     """
     POST /api/simulation/control/
     控制仿真引擎的启动与停止
-    支持传入格式: {"constellation_id": "3600", "action": "start"}
+    支持传入格式: {"constellation_id": "3600", "action": "start", "micro_period_seconds": 5}
     """
     def post(self, request, *args, **kwargs):
         constellation_id = str(request.data.get('constellation_id', ''))
@@ -163,12 +163,40 @@ class SimulationControlView(APIView):
                 
                 logger.info(">>> [API] 手动启动拉起仿真系统: %s", sim_id)
                 import src.config as config
+
+                micro_period_seconds = None
+                for key in (
+                    'micro_period_seconds',
+                    'microPeriodSeconds',
+                    'MicroPeriodSeconds',
+                    'network_heat_value',
+                    'networkHeatValue',
+                ):
+                    if key in request.data:
+                        micro_period_seconds = request.data.get(key)
+                        break
+
+                if micro_period_seconds in (None, ''):
+                    micro_period_seconds = 5
+                else:
+                    try:
+                        micro_period_seconds = int(micro_period_seconds)
+                    except (TypeError, ValueError):
+                        return Response(
+                            {"error": "micro_period_seconds 必须是 1、2、3、4、5 中的一个"},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    if micro_period_seconds not in (1, 2, 3, 4, 5):
+                        return Response(
+                            {"error": "micro_period_seconds 必须是 1、2、3、4、5 中的一个"},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
                 
                 # 动态应用前端传来的星座参数配置
                 config.apply_constellation_config(constellation_id)
                 
                 # 建立新引擎实例化
-                engine = SimulationEngine(constellation_id, 3600)
+                engine = SimulationEngine(constellation_id, 3600, micro_period_seconds=micro_period_seconds)
                 GLOBAL_ENGINES[sim_id] = engine
                 
                 # 绑定 Websocket

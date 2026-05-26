@@ -16,6 +16,8 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
+import os
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
@@ -23,9 +25,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-s!t&#+y+k*(a!$c&3&i07#@^kz=)j#eyc3=2jg!nod!&+7ktj0'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get('DJANGO_DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['*']  # 生产环境为了简单直接设为 *，如果有公网部署需求则根据环境变量设
 
 
 # Application definition
@@ -54,11 +56,19 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
+# Cors configuration that handles dynamic deployments
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
+    "http://localhost",
+    "http://127.0.0.1",
 ]
 
-CORS_ALLOW_ALL_ORIGINS = False
+# 允许从环境变量读取更多的跨域源，避免写死
+env_cors = os.environ.get('CORS_ALLOWED_ORIGINS')
+if env_cors:
+    CORS_ALLOWED_ORIGINS.extend(env_cors.split(','))
+
+CORS_ALLOW_ALL_ORIGINS = True # 为了完全不确定前端 IP 的情况，这里暂时开启所有来源
 
 ROOT_URLCONF = 'satellites_sim_backend.urls'
 
@@ -86,11 +96,11 @@ WSGI_APPLICATION = 'satellites_sim_backend.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'satellite_sim_db',
-        'USER': 'root',
-        'PASSWORD': '123456',
-        'HOST': '127.0.0.1',
-        'PORT': '3306',
+        'NAME': os.environ.get('DB_NAME', 'satellite_sim_db'),
+        'USER': os.environ.get('DB_USER', 'root'),
+        'PASSWORD': os.environ.get('DB_PASSWORD', '123456'),
+        'HOST': os.environ.get('DB_HOST', '127.0.0.1'),
+        'PORT': os.environ.get('DB_PORT', '3306'),
         'OPTIONS': {
             'charset': 'utf8mb4',
         }
@@ -138,18 +148,25 @@ STATIC_URL = 'static/'
 ASGI_APPLICATION = 'satellites_sim_backend.asgi.application'
 
 # 配置 Redis 中间件作为频道通信管道（本机可以随便用一个，也可以换用内存 In-Memory 方便开发）
-CHANNEL_LAYERS = {
-    'default': {
-        'BACKEND': 'channels.layers.InMemoryChannelLayer', # 开发用
-        # 如果你项目依赖了 Redis，用下面这个：
-        # 'BACKEND': 'channels_redis.core.RedisChannelLayer',
-        # 'CONFIG': { "hosts": [('127.0.0.1', 6379)], },
-    },
-}
+if os.environ.get('USE_REDIS'):
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels_redis.core.RedisChannelLayer',
+            'CONFIG': {
+                "hosts": [(os.environ.get('REDIS_HOST', '127.0.0.1'), int(os.environ.get('REDIS_PORT', 6379)))],
+            },
+        },
+    }
+else:
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels.layers.InMemoryChannelLayer',
+        },
+    }
 
 # Celery Configuration Options
-CELERY_BROKER_URL = 'redis://127.0.0.1:6379/0'
-CELERY_RESULT_BACKEND = 'redis://127.0.0.1:6379/1'
+CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://127.0.0.1:6379/0')
+CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', 'redis://127.0.0.1:6379/1')
 CELERY_ACCEPT_CONTENT = ['application/json']
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TASK_SERIALIZER = 'json'
