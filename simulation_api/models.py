@@ -295,3 +295,23 @@ class SimRealtimeLinkState(models.Model):
         indexes = [
             models.Index(fields=['constellation_id', 'timestamp']),
         ]
+
+# satellites_sim_backend_project/simulation_api/models.py 新增一表
+class TopologyPredictionAccuracy(models.Model):
+    """【统计值】链路预测整体精度评估结果"""
+    constellation_id = models.CharField(max_length=64, db_index=True, verbose_name="星座ID")
+    
+    # 评估的时间窗口
+    window_start_time = models.DateTimeField(db_index=True, verbose_name="评估窗口起始时间")
+    window_end_time = models.DateTimeField(verbose_name="评估窗口结束时间")
+    
+    # 精度指标
+    accuracy = models.FloatField(verbose_name="总体预测准确率")
+    precision = models.FloatField(null=True, blank=True, verbose_name="精确率")
+    recall = models.FloatField(null=True, blank=True, verbose_name="召回率")
+    
+    # 采样规模
+    total_evaluated_links = models.IntegerField(verbose_name="参与评估的总链路数")
+
+    class Meta:
+        db_table = "sim_prediction_accuracy"

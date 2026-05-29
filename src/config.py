@@ -62,10 +62,10 @@ MIN_TIME_FACTOR = 0.2
 MAX_TIME_FACTOR = 1.0
 
 # Constellations: tle file, height(km), inclination, planes, sats/plane, phase factor,
-# max_slant_range_km, traffic_scale_factor, min_src_dst_lat_diff_deg, min_src_dst_lon_diff_deg
+# max_slant_range_km, traffic_scale_factor, min_src_dst_lat_diff_deg, min_src_dst_lon_diff_deg, link_availability_threshold
 CONSTELLATION_CONFIGS = {
-    '3600': ('Delta_60_60_58_500_23.txt', 500, 58, 60, 60, 23, 2000.0, 5, 20.0, 20.0),
-    '432': ('Delta_24_18_50_1150_5.txt', 1150, 50, 24, 18, 5, 4000.0, 5, 40.0, 40.0),
+    '3600': ('Delta_60_60_58_500_23.txt', 500, 58, 60, 60, 23, 2000.0, 5, 20.0, 20.0, 0.9),
+    '432': ('Delta_24_18_50_1150_5.txt', 1150, 50, 24, 18, 5, 4000.0, 5, 40.0, 40.0, 0.8),
 }
 SELECTED_CONSTELLATION_ID = '3600'
 
@@ -76,6 +76,7 @@ def apply_constellation_config(constellation_id: str):
     global ORBIT_INCLINATION, NUM_ORBIT_PLANES, SATS_PER_PLANE, PHASE_FACTOR
     global MAX_SLANT_RANGE_KM, TRAFFIC_SCALE_FACTOR
     global MIN_SRC_DST_LAT_DIFF_DEG, MIN_SRC_DST_LON_DIFF_DEG
+    global LINK_AVAILABILITY_THRESHOLD
 
     constellation_id = str(constellation_id)
     if constellation_id not in CONSTELLATION_CONFIGS:
@@ -92,6 +93,7 @@ def apply_constellation_config(constellation_id: str):
         traffic_scale,
         min_src_dst_lat_diff,
         min_src_dst_lon_diff,
+        link_availability_threshold,
     ) = CONSTELLATION_CONFIGS[constellation_id]
     SELECTED_CONSTELLATION_ID = constellation_id
     CONSTELLATION_ID = constellation_id
@@ -106,6 +108,6 @@ def apply_constellation_config(constellation_id: str):
     TRAFFIC_SCALE_FACTOR = traffic_scale
     MIN_SRC_DST_LAT_DIFF_DEG = min_src_dst_lat_diff
     MIN_SRC_DST_LON_DIFF_DEG = min_src_dst_lon_diff
-
+    LINK_AVAILABILITY_THRESHOLD = link_availability_threshold
 
 apply_constellation_config(SELECTED_CONSTELLATION_ID)

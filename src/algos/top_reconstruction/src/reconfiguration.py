@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from copy import deepcopy
 from dataclasses import dataclass, field
 from statistics import pstdev
 from time import perf_counter
@@ -14,7 +13,6 @@ from .adapters import (
     PositionMap,
     Topology,
     canonical_link_attributes,
-    default_link_attributes,
     iter_edges,
     plane_slot_to_sat_id,
     propagation_delay_ms,
@@ -197,6 +195,60 @@ def count_candidate_inter_edges(
 
 _INF_ASSIGNMENT_COST = 1.0e30
 
+_CANONICAL_LINK_ATTRIBUTE_KEYS = (
+    "LinkDistance",
+    "LinkCapacity",
+    "LeftCapacity",
+    "CurrentFlow",
+    "LinkPropagationDelay",
+    "QueueDelay",
+    "TransmissionDelay",
+    "PacketLossRate",
+    "HeatValue",
+    "LinkType",
+)
+
+
+def _copy_link_attributes_for_distance(
+    attr: LinkAttributes,
+    distance: float,
+    link_type: str,
+) -> LinkAttributes:
+    """Copy a normalized link attr without re-running the generic adapter."""
+    distance = max(0.0, float(distance))
+    if all(key in attr for key in _CANONICAL_LINK_ATTRIBUTE_KEYS):
+        copied = dict(attr)
+        copied["LinkDistance"] = distance
+        copied["LinkPropagationDelay"] = max(0.0, propagation_delay_ms(distance))
+        return copied
+
+    return canonical_link_attributes(
+        attr,
+        distance_km=distance,
+        delay_ms=propagation_delay_ms(distance),
+        link_type=link_type,
+    )
+
+
+def _new_link_attributes(
+    distance: float,
+    capacity_gbps: float,
+    link_type: str,
+) -> LinkAttributes:
+    distance = max(0.0, float(distance))
+    capacity = max(0.0, float(capacity_gbps))
+    return {
+        "LinkDistance": distance,
+        "LinkCapacity": capacity,
+        "LeftCapacity": capacity,
+        "CurrentFlow": 0.0,
+        "LinkPropagationDelay": propagation_delay_ms(distance),
+        "QueueDelay": 0.0,
+        "TransmissionDelay": 0.0,
+        "PacketLossRate": 0.0,
+        "HeatValue": 0.0,
+        "LinkType": str(link_type),
+    }
 
 def _hungarian_min_cost_assignment(
     costs: Sequence[Sequence[float]],
@@ -285,12 +337,8 @@ def select_reconfigured_topology(
 
     def minimal_link_attr(attr: LinkAttributes, link_type: str) -> LinkAttributes:
         distance = float(attr.get("LinkDistance", 0.0))
-        return canonical_link_attributes(
-            attr,
-            distance_km=distance,
-            delay_ms=propagation_delay_ms(distance),
-            link_type=link_type,
-        )
+        return _copy_link_attributes_for_distance(attr, distance, link_type)
+
 
     for source_id, initial_links in initial_topology.items():
         for target_id, attr in initial_links:
@@ -457,14 +505,8 @@ def select_reconfigured_topology(
     for plane in range(num_planes):
         for source_id, selected_target in sorted(selected_matchings.get(plane, {}).items()):
             distance = candidate_graph.get(source_id, {}).get(selected_target, 0.0)
-            delay = propagation_delay_ms(distance)
-            forward_attr = default_link_attributes(
-                distance_km=distance,
-                capacity_gbps=link_capacity_gbps,
-                link_type="inter",
-            )
-            forward_attr["LinkPropagationDelay"] = delay
-            reverse_attr = deepcopy(forward_attr)
+            forward_attr = _new_link_attributes(distance, link_capacity_gbps, "inter")
+            reverse_attr = dict(forward_attr)
             selected.setdefault(source_id, []).append((selected_target, forward_attr))
             selected.setdefault(selected_target, []).append((source_id, reverse_attr))
 

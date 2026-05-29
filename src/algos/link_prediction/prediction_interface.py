@@ -91,17 +91,13 @@ class LinkPredictor:
     @staticmethod
     def _select_device():
         if not torch.cuda.is_available():
+            print("[LinkPredictor] 未检测到可用 GPU, 使用 CPU")
             return torch.device("cpu")
         try:
             major, minor = torch.cuda.get_device_capability()
-            current_arch = f"sm_{major}{minor}"
-            supported_arches = set(torch.cuda.get_arch_list())
-            if supported_arches and current_arch not in supported_arches:
-                print(f"[LinkPredictor] CUDA {current_arch} 不支持, 回退到 CPU")
-                return torch.device("cpu")
-        except Exception as e:
-            print(f"[LinkPredictor] CUDA 检测失败: {e}, 回退到 CPU")
-            return torch.device("cpu")
+            print(f"[LinkPredictor] 成功调用 CUDA sm_{major}{minor}: {torch.cuda.get_device_name(0)}")
+        except Exception:
+            pass
         return torch.device("cuda")
 
     def _predict_classifier_probabilities(self, xb, batch_size):

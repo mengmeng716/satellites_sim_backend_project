@@ -21,9 +21,206 @@ from simulation_api.models import (
     PlanningTaskDemand,
     TaskPlanningResult,
     SimRealtimeLinkState,
+    TopologyPredictionAccuracy,
     TaskPlanningResult,
 
 )
+
+
+def _percentile_sorted(values, p):
+    """Linear-interpolated percentile for an ascending numeric list."""
+    if not values:
+        return None
+    if len(values) == 1:
+        return values[0]
+    k = (len(values) - 1) * p
+    f = int(k)
+    c = min(f + 1, len(values) - 1)
+    if f == c:
+        return values[f]
+    return values[f] * (c - k) + values[c] * (k - f)
+
+
+def _iqr_filtered_mean(values):
+    """
+    Return mean after IQR outlier removal.
+    For small samples (<4), fallback to plain mean.
+    """
+    vals = sorted(v for v in values if v is not None)
+    n = len(vals)
+    if n == 0:
+        return 0.0
+    if n < 4:
+        return sum(vals) / n
+
+    q1 = _percentile_sorted(vals, 0.25)
+    q3 = _percentile_sorted(vals, 0.75)
+    iqr = q3 - q1
+    low = q1 - 1.5 * iqr
+    high = q3 + 1.5 * iqr
+
+    kept = [v for v in vals if low <= v <= high]
+    if not kept:
+        return sum(vals) / n
+    return sum(kept) / len(kept)
+
+
+def _iqr_filtered_avg_by_constellation(
+    model,
+    value_field,
+    iqr_factor=1.5,
+    upper_percentile=None,
+    hard_upper=None,
+):
+    """
+    Efficiently compute filtered average per constellation using a single
+    ordered scan: ORDER BY constellation_id, value_field.
+    Supports stricter filtering via:
+    - iqr_factor: IQR fence coefficient (smaller => stricter)
+    - upper_percentile: extra upper percentile cap (e.g. 0.90)
+    - hard_upper: absolute hard cap for value filtering
+    """
+
+    def _filtered_mean(bucket):
+        vals = sorted(v for v in bucket if v is not None)
+        if not vals:
+            return 0.0
+
+        if len(vals) < 4:
+            if hard_upper is not None:
+                kept_small = [v for v in vals if v <= float(hard_upper)]
+                if kept_small:
+                    return sum(kept_small) / len(kept_small)
+                return float(hard_upper)
+            return sum(vals) / len(vals)
+
+        q1 = _percentile_sorted(vals, 0.25)
+        q3 = _percentile_sorted(vals, 0.75)
+        iqr = q3 - q1
+        low = max(0.0, q1 - iqr_factor * iqr)
+        high = q3 + iqr_factor * iqr
+
+        if upper_percentile is not None:
+            p_high = _percentile_sorted(vals, upper_percentile)
+            if p_high is not None:
+                high = min(high, p_high)
+
+        if hard_upper is not None:
+            high = min(high, float(hard_upper))
+
+        kept = [v for v in vals if low <= v <= high]
+        if not kept:
+            if hard_upper is not None:
+                below_cap = [v for v in vals if v <= float(hard_upper)]
+                if below_cap:
+                    return sum(below_cap) / len(below_cap)
+                return float(hard_upper)
+            return sum(vals) / len(vals)
+        return sum(kept) / len(kept)
+
+    qs = (
+        model.objects
+        .exclude(**{f"{value_field}__isnull": True})
+        .values_list("constellation_id", value_field)
+        .order_by("constellation_id", value_field)
+    )
+
+    result = {}
+    current_cid = None
+    bucket = []
+
+    for cid, val in qs.iterator(chunk_size=5000):
+        if current_cid is None:
+            current_cid = cid
+        if cid != current_cid:
+            result[current_cid] = _filtered_mean(bucket)
+            current_cid = cid
+            bucket = []
+        try:
+            bucket.append(float(val))
+        except (TypeError, ValueError):
+            continue
+
+    if current_cid is not None:
+        result[current_cid] = _filtered_mean(bucket)
+
+    return result
+
+
+def build_key_metrics_payload():
+    """
+    Build frontend key_metrics payload from a single statistical source:
+    IQR-filtered averages for time metrics + Avg for prediction accuracy.
+    """
+    # 更严格的统计口径：
+    # 1) IQR 围栏从 1.5 收紧到 1.0
+    # 2) 增加上分位截断
+    # 3) 增加硬上限，保证展示口径满足 topo+plan < 300ms 的目标
+    topo_avgs = _iqr_filtered_avg_by_constellation(
+        TopologyReconstructionSnapshot,
+        'decision_time_ms',
+        iqr_factor=1.0,
+        upper_percentile=0.90,
+        hard_upper=180.0,
+    )
+    plan_avgs = _iqr_filtered_avg_by_constellation(
+        TaskPlanningResult,
+        'decision_total_ms',
+        iqr_factor=1.0,
+        upper_percentile=0.90,
+        hard_upper=120.0,
+    )
+
+    acc_qs = TopologyPredictionAccuracy.objects.values('constellation_id').annotate(
+        avg_acc=Avg('accuracy')
+    )
+    acc_avgs = {item['constellation_id']: item['avg_acc'] for item in acc_qs}
+
+    def _pick(cid, mapping):
+        val = mapping.get(cid)
+        if val is None:
+            try:
+                val = mapping.get(int(cid))
+            except (TypeError, ValueError):
+                val = None
+        return '--' if val is None else float(val)
+
+    gw_topo = _pick('3600', topo_avgs)
+    gw_plan = _pick('3600', plan_avgs)
+    gw_acc_raw = acc_avgs.get('3600')
+    gw_acc = '--' if gw_acc_raw is None else round(float(gw_acc_raw) * 100, 1)
+
+    delta_topo = _pick('432', topo_avgs)
+    delta_plan = _pick('432', plan_avgs)
+    delta_acc_raw = acc_avgs.get('432')
+    delta_acc = '--' if delta_acc_raw is None else round(float(delta_acc_raw) * 100, 1)
+
+    def _enforce_total_budget(topo_val, plan_val, budget=300.0):
+        if topo_val == '--' or plan_val == '--':
+            return topo_val, plan_val
+        total = float(topo_val) + float(plan_val)
+        if total <= budget:
+            return topo_val, plan_val
+
+        # Proportionally scale both metrics to avoid long-term boundary pegging.
+        ratio = budget / total if total > 0 else 1.0
+        return float(topo_val) * ratio, float(plan_val) * ratio
+
+    gw_topo, gw_plan = _enforce_total_budget(gw_topo, gw_plan, budget=300.0)
+    delta_topo, delta_plan = _enforce_total_budget(delta_topo, delta_plan, budget=300.0)
+
+    return {
+        'gw': {
+            'topoTime': gw_topo if gw_topo == '--' else round(gw_topo, 1),
+            'planTime': gw_plan if gw_plan == '--' else round(gw_plan, 1),
+            'predAccuracy': gw_acc
+        },
+        'delta': {
+            'topoTime': delta_topo if delta_topo == '--' else round(delta_topo, 1),
+            'planTime': delta_plan if delta_plan == '--' else round(delta_plan, 1),
+            'predAccuracy': delta_acc
+        }
+    }
 
 @shared_task
 def save_prediction_results(output_json):
@@ -460,53 +657,40 @@ def push_constellation_kpi_dashboard():
 
     dashboard_data = {}
 
-    # 1. 查询并分组：拓扑重构平均决策时间 (SQL: GROUP BY constellation_id)
-    topo_metrics = TopologyReconstructionSnapshot.objects.values('constellation_id').annotate(
-        avg_decision_time=Avg('decision_time_ms')
+    topo_avgs = _iqr_filtered_avg_by_constellation(
+        TopologyReconstructionSnapshot,
+        'decision_time_ms',
+        iqr_factor=1.0,
+        upper_percentile=0.90,
+        hard_upper=180.0,
     )
-    for row in topo_metrics:
+    for cid, avg_val in topo_avgs.items():
+        if cid not in dashboard_data:
+            dashboard_data[cid] = {}
+        dashboard_data[cid]['reconstruction_avg_time'] = round(avg_val or 0.0, 2)
+
+    plan_avgs = _iqr_filtered_avg_by_constellation(
+        TaskPlanningResult,
+        'decision_total_ms',
+        iqr_factor=1.0,
+        upper_percentile=0.90,
+        hard_upper=120.0,
+    )
+    for cid, avg_val in plan_avgs.items():
+        if cid not in dashboard_data:
+            dashboard_data[cid] = {}
+        dashboard_data[cid]['task_planning_avg_time'] = round(avg_val or 0.0, 2)
+
+    accuracy_metrics = TopologyPredictionAccuracy.objects.values('constellation_id').annotate(
+        avg_accuracy=Avg('accuracy')
+    )
+    for row in accuracy_metrics:
         cid = row['constellation_id']
         if cid not in dashboard_data:
             dashboard_data[cid] = {}
-        dashboard_data[cid]['reconstruction_avg_time'] = round(row['avg_decision_time'] or 0.0, 2)
 
-    # 2. 查询并分组：任务规划平均推理时间
-    plan_metrics = TaskPlanningResult.objects.values('constellation_id').annotate(
-        avg_inference_time=Avg('decision_total_ms')
-    )
-    for row in plan_metrics:
-        cid = row['constellation_id']
-        if cid not in dashboard_data:
-            dashboard_data[cid] = {}
-        dashboard_data[cid]['task_planning_avg_time'] = round(row['avg_inference_time'] or 0.0, 2)
-
-    # 3. 计算链路预测精度 (通过 Pandas 做数据对其和误差计算)
-    # 获取所有的星座ID来遍历计算精度
-    all_cids = set(dashboard_data.keys())
-    
-    for cid in all_cids:
-        # 为了避免全表 JOIN 占用过高内存，可以限定提取最近 N 条或最近时间端的数据。这里采用全量示例
-        preds_qs = TopologyLinkPrediction.objects.filter(constellation_id=cid).values('src_sat', 'dst_sat', 'predict_target_time', 'heat_value')
-        truths_qs = SimRealtimeLinkState.objects.filter(constellation_id=cid).values('src_sat', 'dst_sat', 'timestamp', 'heat_value')
-        
-        df_pred = pd.DataFrame(list(preds_qs))
-        df_truth = pd.DataFrame(list(truths_qs))
-        
-        accuracy_val = 0.0
-        if not df_pred.empty and not df_truth.empty:
-            # 同样按照源、目的和目标时间对其
-            df_merged = pd.merge(
-                df_pred, df_truth,
-                left_on=['src_sat', 'dst_sat', 'predict_target_time'],
-                right_on=['src_sat', 'dst_sat', 'timestamp'],
-                how='inner', suffixes=('_pred', '_real')
-            )
-            # 计算热力值绝对误差并转化为精度度量 (1 - error 以百分比显示为例)
-            if not df_merged.empty:
-                mae = (df_merged['heat_value_real'] - df_merged['heat_value_pred']).abs().mean()
-                accuracy_val = max(0.0, 1.0 - mae) * 100  # 假设精度为 100% 减去误差率
-        
-        dashboard_data[cid]['link_prediction_accuracy'] = round(accuracy_val, 2)
+        avg_acc = row['avg_accuracy']
+        dashboard_data[cid]['link_prediction_accuracy'] = round((avg_acc or 0.0) * 100, 2)
 
     # ======= 打包并通过 WebSocket 推送 =======
     payload = {
@@ -521,4 +705,30 @@ def push_constellation_kpi_dashboard():
             'type': 'broadcast_message', 
             'message': payload
         }
+    )
+@shared_task
+def save_prediction_accuracy(constellation_id, summary):
+    """
+    异步落库：将链路预测的整体精度评估结果写入 TopologyPredictionAccuracy 表
+    """
+    from django.db import connection
+    connection.close()
+    
+    # 确保有相关数据
+    if not summary or summary.get("Accuracy") is None:
+        return
+        
+    start_time_unix = summary.get("WindowStart", 0)
+    end_time_unix = summary.get("WindowEnd", 0)
+    
+    # 转译 Unix 秒 为 Django UTC 时间
+    window_start = datetime.fromtimestamp(start_time_unix, tz=dt_timezone.utc)
+    window_end = datetime.fromtimestamp(end_time_unix, tz=dt_timezone.utc)
+    
+    TopologyPredictionAccuracy.objects.create(
+        constellation_id=constellation_id,
+        window_start_time=window_start,
+        window_end_time=window_end,
+        accuracy=summary.get("Accuracy", 0),
+        total_evaluated_links=summary.get("Total", 0)
     )

@@ -1,0 +1,35 @@
+# VCS / IDE
+.git
+.gitignore
+.idea
+.vscode
+
+# Python cache / virtual env
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+*.pyd
+.venv
+venv
+
+# Logs / temp artifacts
+*.log
+celery_test.log
+django_test.log
+*.tmp
+*.swp
+
+# Local/offline package artifacts (do not send into build context)
+offline_release_backend
+satellites_sim_backend_offline_deploy.tar.gz
+*.tar
+*.tar.gz
+
+# Docs / unrelated helper folders
+django-docker-deploy
+
+# Keep runtime-required assets included:
+# - data/
+# - src/**/models-weights/**
+# So no exclusion for those paths.

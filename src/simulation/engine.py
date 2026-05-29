@@ -596,20 +596,33 @@ class SimulationEngine:
 
                             selected_links = []
                             mode = "load"
+                            load_links_for_step.sort(
+                                key=lambda x: (
+                                    x["metrics"].get("HeatValue", 0.0),
+                                    x["metrics"].get("QueueDelay", 0.0)
+                                ),
+                                reverse=True
+                            )
+
                             if hot_links_for_step:
                                 # 高危优先：按热度从高到低排序，每步最多抽取 Top 50
                                 hot_links_for_step.sort(key=lambda x: x["metrics"]["HeatValue"], reverse=True)
                                 selected_links = hot_links_for_step[:50]
                                 mode = "risk"
+
+                                # 若高危链路不足 5 条，则用同一步最大负载链路补齐至 5 条（若可用）
+                                if len(selected_links) < 5 and load_links_for_step:
+                                    existed = {(x["src"], x["dst"]) for x in selected_links}
+                                    for cand in load_links_for_step:
+                                        cand_key = (cand["src"], cand["dst"])
+                                        if cand_key in existed:
+                                            continue
+                                        selected_links.append(cand)
+                                        existed.add(cand_key)
+                                        if len(selected_links) >= 5:
+                                            break
                             elif load_links_for_step:
                                 # 无高危时回退：发送最大负载 Top 50，供前端显示 Top 5
-                                load_links_for_step.sort(
-                                    key=lambda x: (
-                                        x["metrics"].get("HeatValue", 0.0),
-                                        x["metrics"].get("QueueDelay", 0.0)
-                                    ),
-                                    reverse=True
-                                )
                                 selected_links = load_links_for_step[:50]
 
                             if selected_links:
@@ -850,17 +863,38 @@ class SimulationEngine:
                             link_dict = {
                                 "src_sat": src_id,
                                 "dst_sat": dst_id,
+                                "srcSat": src_id,
+                                "dstSat": dst_id,
                                 "distance": attr.link_distance,
+                                "link_distance": attr.link_distance,
                                 "current_flow": attr.current_flow,
                                 "left_capacity": attr.left_capacity,
+                                "link_capacity": attr.link_capacity,
+                                "link_propagation_delay": attr.link_propagation_delay,
                                 "queue_delay": attr.queue_delay,
-                                "heat_value": attr.heat_value
+                                "transmission_delay": attr.transmission_delay,
+                                "packet_loss_rate": attr.packet_loss_rate,
+                                "heat_value": attr.heat_value,
+                                # CamelCase aliases for direct UI consumption.
+                                "LinkDistance": attr.link_distance,
+                                "CurrentFlow": attr.current_flow,
+                                "LeftCapacity": attr.left_capacity,
+                                "LinkCapacity": attr.link_capacity,
+                                "LinkPropagationDelay": attr.link_propagation_delay,
+                                "QueueDelay": attr.queue_delay,
+                                "TransmissionDelay": attr.transmission_delay,
+                                "PacketLossRate": attr.packet_loss_rate,
+                                "HeatValue": attr.heat_value,
                             }
                             link_list.append(link_dict)
                             
                             # 计算增量供前端更新
                             link_key = f"{src_id}_{dst_id}"
-                            hash_val = hash(f"{attr.current_flow}_{attr.left_capacity}_{attr.queue_delay}_{attr.heat_value}")
+                            hash_val = hash(
+                                f"{attr.current_flow}_{attr.left_capacity}_{attr.link_capacity}_"
+                                f"{attr.link_distance}_{attr.link_propagation_delay}_{attr.queue_delay}_"
+                                f"{attr.transmission_delay}_{attr.packet_loss_rate}_{attr.heat_value}"
+                            )
                             if self._last_notified_links.get(link_key) != hash_val:
                                 delta_links.append(link_dict)
                                 self._last_notified_links[link_key] = hash_val
@@ -1612,6 +1646,14 @@ class SimulationEngine:
             f"frames={summary['EvaluatedFrames']}/{summary['ExpectedFrames']}"
         )
         self.notify_backend("link_prediction_accuracy", summary)
+        
+        # 将预测精度异步落库
+        try:
+            from simulation_api.db_services import save_prediction_accuracy
+            save_prediction_accuracy.delay(self.constellation_id, summary)
+        except Exception as e:
+            logger.error(f"[{self.current_time}s] 预测精度数据异步落库异常: {e}")
+            
         self._pending_prediction_accuracy = None
 
 
@@ -1990,43 +2032,16 @@ class SimulationEngine:
                 # 注意：这里传 _last_topology_reconstruction_result 字典，因为它包含 TopDifference/TopQualities 等关键指标
                 # ==========================================
                 # ========== 发送关键指标 =============
-                import random
-                if self._last_pred_acc == 98.5:
-                    self._last_pred_acc = 95.0 + random.random() * 4.9
-                else:
-                    self._last_pred_acc += (random.random() - 0.5) * 0.5
-                    self._last_pred_acc = max(90.0, min(99.9, self._last_pred_acc))
-                
                 try:
-                    from simulation_api.models import TaskPlanningResult, TopologyReconstructionSnapshot
-                    from django.db.models import Avg
-                    
-                    plan_qs = TaskPlanningResult.objects.values('constellation_id').annotate(avg_time=Avg('decision_total_ms'))
-                    topo_qs = TopologyReconstructionSnapshot.objects.values('constellation_id').annotate(avg_time=Avg('decision_time_ms'))
-                    
-                    plan_avgs = {item['constellation_id']: item['avg_time'] or 0.0 for item in plan_qs}
-                    topo_avgs = {item['constellation_id']: item['avg_time'] or 0.0 for item in topo_qs}
-                    
-                    gw_topo = topo_avgs.get('3600', 80.0)
-                    gw_plan = plan_avgs.get('3600', 40.0)
-                    delta_topo = topo_avgs.get('delta', gw_topo * 0.45)
-                    delta_plan = plan_avgs.get('delta', gw_plan * 0.45)
+                    # 唯一数据源：统一使用 db_services 中的 IQR 统计口径
+                    from simulation_api.db_services import build_key_metrics_payload
+                    key_metrics_data = build_key_metrics_payload()
                 except Exception as e:
                     logger.warning(f"DB query failed: {e}")
-                    gw_topo, gw_plan, delta_topo, delta_plan = 80.0, 40.0, 36.0, 18.0
-                
-                key_metrics_data = {
-                    'gw': {
-                        'topoTime': round(gw_topo, 1),
-                        'planTime': round(gw_plan, 1),
-                        'predAccuracy': round(self._last_pred_acc, 1)
-                    },
-                    'delta': {
-                        'topoTime': round(delta_topo, 1),
-                        'planTime': round(delta_plan, 1),
-                        'predAccuracy': round(min(99.9, self._last_pred_acc + 0.6), 1)
+                    key_metrics_data = {
+                        'gw': {'topoTime': '--', 'planTime': '--', 'predAccuracy': '--'},
+                        'delta': {'topoTime': '--', 'planTime': '--', 'predAccuracy': '--'}
                     }
-                }
                 self.notify_backend('key_metrics', key_metrics_data)
 
                 reconstruction_dict = self._last_topology_reconstruction_result
