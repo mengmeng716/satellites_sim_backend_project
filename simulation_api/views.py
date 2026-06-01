@@ -116,13 +116,19 @@ class SubmitPlanningTaskView(APIView):
             # 字段映射（加在 views.py 准备 push 之前）
             formatted_task_list = []
             for t in task_list:
+                duration_raw = t.get("duration", 0)
+                try:
+                    duration_seconds = float(duration_raw) / 1000.0
+                except (TypeError, ValueError):
+                    duration_seconds = 0.0
+
                 formatted_task_list.append({
                     "TaskId": t.get("task_id", ""),
                     "SourceGroundStationId": t.get("src_sat_id", 0),  # 具体看你需要的是 Source 还是 SourceNode
                     "TargetGroundStationId": t.get("dest_sat_id", 0),
                     "DemandGbps": t.get("demand_gbps", 0.0),
                     "ArrivalTime": t.get("arrival_time", ""),
-                    "Duration": t.get("duration", 0),
+                    "Duration": duration_seconds,
                     "DelayBudget": t.get("delay_budget", 0),
                     "TaskPriority": t.get("task_priority", 0)
                 })
