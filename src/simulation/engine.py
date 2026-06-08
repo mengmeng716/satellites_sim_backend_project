@@ -816,10 +816,10 @@ class SimulationEngine:
                         f"TaskId={task_id}, cost_ms={self._last_plan_time:.2f}, "
                         f"capacity_status={res.get('capacity_status') if isinstance(res, dict) else 'N/A'}"
                     )
-                    self.notify_backend("path_planning_result", {
-                        "task_id": planning_task.get("TaskId"),
-                        "result": res
-                    })
+                    # self.notify_backend("path_planning_result", {
+                    #     "task_id": planning_task.get("TaskId"),
+                    #     "result": res
+                    # })
                 except Exception as e:
                     logger.exception(
                         f"[_process_pending_tasks] 任务 {planning_task.get('TaskId')} 执行异常: {e}"

@@ -65,5 +65,16 @@ services:
       DJANGO_DEBUG: ${DJANGO_DEBUG:-False}
     command: ["celery", "-A", "satellites_sim_backend", "worker", "-l", "info"]
 
+  frontend:
+    image: satellite-frontend:1.0.0
+    container_name: sim-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      API_HOST: backend
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+
 volumes:
   mysql_data:
