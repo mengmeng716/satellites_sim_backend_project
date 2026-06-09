@@ -176,7 +176,7 @@ if [[ "${BUILD_FRONTEND}" -eq 1 ]]; then
 		pnpm install --frozen-lockfile
 		pnpm run build
 	else
-		npm install
+		npm install --legacy-peer-deps
 		npm run build
 	fi
 	docker build -t satellite-frontend:1.0.0 .
