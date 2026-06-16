@@ -556,9 +556,15 @@ class SimulationEngine:
                 def _recursive_dict(obj):
                     if hasattr(obj, "dict"):
                         return _recursive_dict(obj.dict(by_alias=True))
+                    elif isinstance(obj, np.generic):
+                        return obj.item()
+                    elif isinstance(obj, np.ndarray):
+                        return _recursive_dict(obj.tolist())
+                    elif isinstance(obj, (datetime.datetime, datetime.date)):
+                        return obj.isoformat()
                     elif isinstance(obj, dict):
                         return {k: _recursive_dict(v) for k, v in obj.items()}
-                    elif isinstance(obj, list):
+                    elif isinstance(obj, (list, tuple, set)):
                         return [_recursive_dict(v) for v in obj]
                     return obj
                     
@@ -782,6 +788,41 @@ class SimulationEngine:
 
         if tasks_to_execute:
             # 定义一个内部函数供线程池后台执行
+            def _build_task_planning_failed_result(planning_task, reason):
+                try:
+                    demand_gbps = float(planning_task.get("DemandGbps", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    demand_gbps = 0.0
+
+                return {
+                    "task_id": planning_task.get("TaskId", "unknown"),
+                    "constellation": str(self.constellation_id),
+                    "src": None if planning_task.get("SourceGroundStationId") is None else str(planning_task.get("SourceGroundStationId")),
+                    "dst": None if planning_task.get("TargetGroundStationId") is None else str(planning_task.get("TargetGroundStationId")),
+                    "demand_gbps": demand_gbps,
+                    "reason": reason,
+                    "avg_delay_ms": None,
+                    "capacity_max_util_after": None,
+                    "capacity_status": "FAILED",
+                    "capacity_total_overflow": None,
+                    "decision_total_ms": 0.0,
+                    "jitter_ms": None,
+                    "max_link_utilization_after": None,
+                    "overflow_amount": None,
+                    "allocations": [],
+                }
+
+            def _notify_task_planning_result(result):
+                if not result:
+                    return
+
+                self.notify_backend("task_planning_result", result)
+                try:
+                    from simulation_api.db_services import save_task_planning_results
+                    save_task_planning_results.delay(result)
+                except Exception as e:
+                    logger.error(f"[{self.current_time}s] 任务规划结果异步落库异常: {e}")
+
             def _async_run_planning(planning_task):
                 task_id = planning_task.get("TaskId")
                 task_type = planning_task.get("TaskType")
@@ -824,17 +865,33 @@ class SimulationEngine:
                     logger.exception(
                         f"[_process_pending_tasks] 任务 {planning_task.get('TaskId')} 执行异常: {e}"
                     )
+                    failed_result = _build_task_planning_failed_result(
+                        planning_task,
+                        f"worker execution error: {str(e)}"
+                    )
+                    _notify_task_planning_result(failed_result)
 
             for task in tasks_to_execute:
                 # 瞬间投递，不阻塞微周期
                 logger.info(
                     f"[{self.current_time}s] [TaskQueue] 提交任务到执行线程池: TaskId={task.get('TaskId')}"
                 )
-                self.task_executor.submit(_async_run_planning, task)
+                # self.task_executor.submit(_async_run_planning, task)
+                try:
+                    self.task_executor.submit(_async_run_planning, task)
+                except Exception as e:
+                    logger.exception(
+                        f"[_process_pending_tasks] submit failed for task {task.get('TaskId')}: {e}"
+                    )
+                    failed_result = _build_task_planning_failed_result(
+                        task,
+                        f"task executor submit error: {str(e)}"
+                    )
+                    _notify_task_planning_result(failed_result)
 
-# """
-# 根据zz的拓扑状态更新之后接入
-# """
+    # """
+    # 根据zz的拓扑状态更新之后接入
+    # """
 
     def update_topology_state(self, new_topology: TopologyState):
         """拓扑状态更新入口，写入时自动更新 Timestamp 为当前帧 Unix ms"""

@@ -78,7 +78,7 @@ echo "▶ 执行 websocket 自动化客户端测试 (test_client.py)..."
 python test_client.py
 
 
-# redis-server
+# sudo service redis-server start
 # service mysql status
 # sudo service mysql start
 # celery -A satellites_sim_backend worker -l info

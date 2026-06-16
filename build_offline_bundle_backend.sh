@@ -227,7 +227,10 @@ if [[ "${#IMAGES_TO_SAVE[@]}" -eq 0 ]]; then
 fi
 
 docker save "${IMAGES_TO_SAVE[@]}" -o "${OUTPUT_DIR}/images.tar"
-sha256sum "${OUTPUT_DIR}/images.tar" > "${OUTPUT_DIR}/images.tar.sha256"
+(
+	cd "${OUTPUT_DIR}"
+	sha256sum "images.tar" > "images.tar.sha256"
+)
 
 echo "[6/7] copy deployment files"
 if [[ "${BUILD_BACKEND}" -eq 1 ]]; then
@@ -295,8 +298,14 @@ if [[ "${INCLUDE_RUNTIME}" -eq 1 ]]; then
 	copy_or_download_runtime "${COMPOSE_BIN_LOCAL}" "${COMPOSE_URLS}" "${COMPOSE_BIN}" "Compose plugin" 1000000
 	chmod +x "${COMPOSE_BIN}"
 	echo "${ARCH}" > "${OUTPUT_DIR}/runtime/TARGET_ARCH"
-	sha256sum "${DOCKER_TGZ}" > "${OUTPUT_DIR}/runtime/docker/docker-${DOCKER_VERSION}.tgz.sha256"
-	sha256sum "${COMPOSE_BIN}" > "${OUTPUT_DIR}/runtime/compose/docker-compose-linux-${ARCH}.sha256"
+	(
+		cd "${OUTPUT_DIR}/runtime/docker"
+		sha256sum "docker-${DOCKER_VERSION}.tgz" > "docker-${DOCKER_VERSION}.tgz.sha256"
+	)
+	(
+		cd "${OUTPUT_DIR}/runtime/compose"
+		sha256sum "docker-compose-linux-${ARCH}" > "docker-compose-linux-${ARCH}.sha256"
+	)
 
 	cat > "${OUTPUT_DIR}/setup_runtime.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -516,8 +525,12 @@ Backend:  http://<target-ip>:8000
 EOF
 
 cd "${PROJECT_DIR}"
+ARCHIVE_NAME="$(basename "${ARCHIVE_PATH}")"
 tar -czf "${ARCHIVE_PATH}" -C "${PROJECT_DIR}" "$(basename "${OUTPUT_DIR}")"
-sha256sum "${ARCHIVE_PATH}" > "${ARCHIVE_PATH}.sha256"
+(
+	cd "${PROJECT_DIR}"
+	sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
+)
 
 echo "Done: ${ARCHIVE_PATH}"
 echo "SHA256: ${ARCHIVE_PATH}.sha256"
