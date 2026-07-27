@@ -1,11 +1,13 @@
 import threading
 import uuid
 import logging
+from datetime import timezone as dt_timezone
 from django.utils import timezone
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework import generics
+from dateutil.parser import parse as parse_datetime
 
 
 # 假设你的引擎可以这样导入 (这里仅给出伪代码示例结构)
@@ -113,6 +115,9 @@ class SubmitPlanningTaskView(APIView):
                 ">>> [API] 前端下发的任务参数详情(最多3条预览): %s",
                 task_list[:3]
             )
+            current_sim_time = float(getattr(engine, "current_time", 0.0) or 0.0)
+            now_utc = timezone.now().astimezone(dt_timezone.utc)
+
             # 字段映射（加在 views.py 准备 push 之前）
             formatted_task_list = []
             for t in task_list:
@@ -122,12 +127,34 @@ class SubmitPlanningTaskView(APIView):
                 except (TypeError, ValueError):
                     duration_seconds = 0.0
 
+                # 将到达时间锚定到当前仿真时间轴，避免 3600 重负载时出现“真实时间到了但仿真时间未到”的长时间等待。
+                arrival_offset_seconds = 0.0
+                raw_arrival = t.get("arrival_time")
+                if raw_arrival not in (None, ""):
+                    try:
+                        arrival_dt = parse_datetime(str(raw_arrival))
+                        if arrival_dt.tzinfo is None:
+                            arrival_dt = arrival_dt.replace(tzinfo=dt_timezone.utc)
+                        else:
+                            arrival_dt = arrival_dt.astimezone(dt_timezone.utc)
+                        arrival_offset_seconds = max(0.0, (arrival_dt - now_utc).total_seconds())
+                    except Exception as exc:
+                        logger.warning(
+                            "[SubmitPlanningTask] arrival_time parse failed for task=%s, value=%s, err=%s; fallback immediate",
+                            t.get("task_id"),
+                            raw_arrival,
+                            exc,
+                        )
+
+                arrival_sim_time = current_sim_time + arrival_offset_seconds
+
                 formatted_task_list.append({
                     "TaskId": t.get("task_id", ""),
                     "SourceGroundStationId": t.get("src_sat_id", 0),  # 具体看你需要的是 Source 还是 SourceNode
                     "TargetGroundStationId": t.get("dest_sat_id", 0),
                     "DemandGbps": t.get("demand_gbps", 0.0),
                     "ArrivalTime": t.get("arrival_time", ""),
+                    "arrival_sim_time": arrival_sim_time,
                     "Duration": duration_seconds,
                     "DelayBudget": t.get("delay_budget", 0),
                     "TaskPriority": t.get("task_priority", 0)

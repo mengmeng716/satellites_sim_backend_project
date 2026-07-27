@@ -171,4 +171,11 @@ CELERY_ACCEPT_CONTENT = ['application/json']
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
+CELERY_TASK_DEFAULT_QUEUE = os.environ.get('CELERY_TASK_DEFAULT_QUEUE', 'simulation_tasks')
+CELERY_TASK_DEFAULT_EXCHANGE = os.environ.get('CELERY_TASK_DEFAULT_EXCHANGE', 'simulation_tasks')
+CELERY_TASK_DEFAULT_ROUTING_KEY = os.environ.get('CELERY_TASK_DEFAULT_ROUTING_KEY', 'simulation_tasks')
+CELERY_TASK_ROUTES = {
+    'simulation_api.db_services.*': {'queue': CELERY_TASK_DEFAULT_QUEUE},
+    'simulation_api.tasks.*': {'queue': CELERY_TASK_DEFAULT_QUEUE},
+}
 

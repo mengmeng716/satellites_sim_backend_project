@@ -857,10 +857,23 @@ class SimulationEngine:
                         f"TaskId={task_id}, cost_ms={self._last_plan_time:.2f}, "
                         f"capacity_status={res.get('capacity_status') if isinstance(res, dict) else 'N/A'}"
                     )
-                    # self.notify_backend("path_planning_result", {
-                    #     "task_id": planning_task.get("TaskId"),
-                    #     "result": res
-                    # })
+                    # 成功结果也必须上报，否则前端批次会长期处于 missing 状态
+                    success_result = dict(res or {})
+                    success_result.setdefault("task_id", planning_task.get("TaskId", "unknown"))
+                    success_result.setdefault("constellation", str(self.constellation_id))
+                    success_result.setdefault(
+                        "src",
+                        None if planning_task.get("SourceGroundStationId") is None else str(planning_task.get("SourceGroundStationId"))
+                    )
+                    success_result.setdefault(
+                        "dst",
+                        None if planning_task.get("TargetGroundStationId") is None else str(planning_task.get("TargetGroundStationId"))
+                    )
+                    success_result.setdefault("demand_gbps", float(planning_task.get("DemandGbps", 0.0) or 0.0))
+                    success_result.setdefault("decision_total_ms", float(self._last_plan_time or 0.0))
+                    success_result.setdefault("capacity_status", success_result.get("capacity_status", "OK"))
+                    success_result.setdefault("allocations", success_result.get("allocations", []))
+                    _notify_task_planning_result(success_result)
                 except Exception as e:
                     logger.exception(
                         f"[_process_pending_tasks] 任务 {planning_task.get('TaskId')} 执行异常: {e}"

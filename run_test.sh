@@ -83,3 +83,8 @@ python test_client.py
 # sudo service mysql start
 # celery -A satellites_sim_backend worker -l info
 # python manage.py runserver
+# python manage.py runserver 8001
+# celery -A satellites_sim_backend worker -l info --concurrency=1 -Q simulation_tasks -n simulation@%h
+# python manage.py runserver 8003
+# celery -A satellites_security_backend worker -l info --concurrency=1 -Q security_tasks -n security@%h
+
