@@ -18,6 +18,18 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 import os
 
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_list(name: str, default: str = "") -> list[str]:
+    value = os.environ.get(name, default)
+    return [item.strip() for item in value.split(',') if item.strip()]
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
@@ -25,9 +37,9 @@ import os
 SECRET_KEY = 'django-insecure-s!t&#+y+k*(a!$c&3&i07#@^kz=)j#eyc3=2jg!nod!&+7ktj0'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.environ.get('DJANGO_DEBUG', 'True') == 'True'
+DEBUG = _env_flag('DJANGO_DEBUG', default=False)
 
-ALLOWED_HOSTS = ['*']  # 生产环境为了简单直接设为 *，如果有公网部署需求则根据环境变量设
+ALLOWED_HOSTS = _env_list('DJANGO_ALLOWED_HOSTS', default='127.0.0.1,localhost')
 
 
 # Application definition
@@ -66,9 +78,9 @@ CORS_ALLOWED_ORIGINS = [
 # 允许从环境变量读取更多的跨域源，避免写死
 env_cors = os.environ.get('CORS_ALLOWED_ORIGINS')
 if env_cors:
-    CORS_ALLOWED_ORIGINS.extend(env_cors.split(','))
+    CORS_ALLOWED_ORIGINS.extend(_env_list('CORS_ALLOWED_ORIGINS'))
 
-CORS_ALLOW_ALL_ORIGINS = True # 为了完全不确定前端 IP 的情况，这里暂时开启所有来源
+CORS_ALLOW_ALL_ORIGINS = _env_flag('CORS_ALLOW_ALL_ORIGINS', default=False)
 
 ROOT_URLCONF = 'satellites_sim_backend.urls'
 

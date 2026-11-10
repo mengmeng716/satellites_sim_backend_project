@@ -76,15 +76,36 @@ fi
 
 echo "▶ 执行 websocket 自动化客户端测试 (test_client.py)..."
 python test_client.py
+# celery -A satellites_sim_backend worker -l info
 
-
+# 启动redis-server和mysql服务
+# service redis-server status
 # sudo service redis-server start
 # service mysql status
 # sudo service mysql start
-# celery -A satellites_sim_backend worker -l info
-# python manage.py runserver
+
+# 启动仿真后端的django服务和celery服务
+# cd /home/qmm/workspace/satellites_sim_backend_project
+# source ~/.venvs/django-sim/bin/activate
 # python manage.py runserver 8001
+# cd /home/qmm/workspace/satellites_sim_backend_project
+# source ~/.venvs/django-sim/bin/activate
 # celery -A satellites_sim_backend worker -l info --concurrency=1 -Q simulation_tasks -n simulation@%h
+
+# 启动任务规划后端的django服务和celery服务
+# cd /home/qmm/workspace/satelliteProjectBack-bj
+# source ~/.venvs/django-sim/bin/activate
+# python manage.py runserver 8002
+
+# 启动安全后端的django服务和celery服务
+# cd /home/qmm/workspace/satellites_security_backend_project
+# source /home/qmm/.venvs/django-security/bin/activate
 # python manage.py runserver 8003
+# cd /home/qmm/workspace/satellites_security_backend_project
+# source /home/qmm/.venvs/django-security/bin/activate
 # celery -A satellites_security_backend worker -l info --concurrency=1 -Q security_tasks -n security@%h
+
+#启动前端
+# cd /home/qmm/workspace/satellite-front
+# npm run dev
 
