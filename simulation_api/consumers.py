@@ -8,7 +8,9 @@ class SimulationConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self._is_connected = False
         # 1. 从 websocket的url路由参数中获取 sim_id
-        self.simulation_id = self.scope['url_route']['kwargs'].get('sim_id', 'default_sim')
+        route_info = self.scope.get('url_route') or {}
+        route_kwargs = route_info.get('kwargs') or {}
+        self.simulation_id = route_kwargs.get('sim_id', 'default_sim')
         # 2. 动态生成这个防真的专属组名
         self.group_name = f"sim_stream_{self.simulation_id}"
         
