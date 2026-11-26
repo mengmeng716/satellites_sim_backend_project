@@ -39,6 +39,65 @@ MAX_LINK_SPEED_GBPS = 100.0
 MAX_LINKS_PER_SATELLITE = 4
 LINK_STABILITY = 0.95
 
+# Laser configuration (loaded at startup, immutable during runtime)
+# 标量默认值与 STD 预设保持一致，仅在预设缺失时兜底使用。
+LASER_WAVELENGTH_NM = 1550.0
+LASER_MODULATION_BANDWIDTH_HZ = 1.25e11
+LASER_TX_POWER_NOMINAL_DBM = 30.0
+LASER_RX_SENSITIVITY_DBM = -33.0
+LASER_RX_POWER_OPERATING_RANGE_DBM = [-33.0, -10.0]
+LASER_OPTICS_EFFICIENCY = 0.8
+LASER_POINTING_LOSS_MAX_DB = 3.0
+
+# 链路预算公共参数（不属于单个激光器预设）
+LASER_APERTURE_DIAMETER_M = 0.085      # 收发望远镜口径 D，增益 G=(πD/λ)²
+LASER_SNR_AT_SENSITIVITY_DB = 8.5      # 接收功率=灵敏度时的 SNR（QPSK 硬判 FEC 门限 BER≈3.8e-3）
+LASER_FEC_NET_CODING_GAIN_DB = 9.0     # 硬判 FEC 净编码增益，用于纠错后 BER
+LINK_PACKET_BITS = 12000               # 丢包率/发送时延计算用的帧长（1500 B）
+
+# Fixed laser profile catalog for the whole constellation.
+# Each link chooses one profile by laser type.
+# ModulationBandwidth 按等效线路速率（bit/s）解释：接收功率 ≥ RxSensitivity 时
+# 可实现速率 = min(ModulationBandwidth, MAX_LINK_SPEED_GBPS)。
+LASER_DEFAULT_TYPE = "STD"
+LASER_CONFIG_PRESETS = {
+    "STD": {
+        "Wavelength": 1550.0,
+        "ModulationBandwidth": 1.25e11,
+        "TxPowerNominal": 30.0,
+        "RxSensitivity": -33.0,
+        "RxPowerOperatingRange": [-33.0, -10.0],
+        "OpticsEfficiency": 0.8,
+        "PointingLossMax": 3.0,
+    },
+    "ROBUST": {
+        "Wavelength": 1550.0,
+        "ModulationBandwidth": 1.1e11,
+        "TxPowerNominal": 32.0,
+        "RxSensitivity": -34.0,
+        "RxPowerOperatingRange": [-34.0, -11.0],
+        "OpticsEfficiency": 0.82,
+        "PointingLossMax": 3.2,
+    },
+    "FAST": {
+        "Wavelength": 1550.0,
+        "ModulationBandwidth": 1.4e11,
+        "TxPowerNominal": 29.0,
+        "RxSensitivity": -32.0,
+        "RxPowerOperatingRange": [-32.0, -9.0],
+        "OpticsEfficiency": 0.78,
+        "PointingLossMax": 2.8,
+    },
+}
+
+# Four-neighbor emitters per satellite: right/left in-plane, up/down inter-plane.
+# 按星座选择：432 星座同轨链路长 2612 km，FAST 低于灵敏度 1 dB，同轨改用 ROBUST。
+SATELLITE_LASER_DIRECTION_TYPE_BY_CONSTELLATION = {
+    "3600": {"RIGHT": "FAST", "LEFT": "FAST", "UP": "ROBUST", "DOWN": "ROBUST"},
+    "432": {"RIGHT": "ROBUST", "LEFT": "ROBUST", "UP": "ROBUST", "DOWN": "ROBUST"},
+}
+SATELLITE_LASER_DIRECTION_TYPE = dict(SATELLITE_LASER_DIRECTION_TYPE_BY_CONSTELLATION["3600"])
+
 # Source-Destination pair constraint (based on lat/lon difference)
 MIN_SRC_DST_LAT_DIFF_DEG = 20.0   # 源-目的卫星对的最小纬度差阈值（度）
 MIN_SRC_DST_LON_DIFF_DEG = 20.0   # 源-目的卫星对的最小经度差阈值（度）
@@ -77,6 +136,7 @@ def apply_constellation_config(constellation_id: str):
     global MAX_SLANT_RANGE_KM, TRAFFIC_SCALE_FACTOR
     global MIN_SRC_DST_LAT_DIFF_DEG, MIN_SRC_DST_LON_DIFF_DEG
     global LINK_AVAILABILITY_THRESHOLD
+    global SATELLITE_LASER_DIRECTION_TYPE
 
     constellation_id = str(constellation_id)
     if constellation_id not in CONSTELLATION_CONFIGS:
@@ -109,5 +169,6 @@ def apply_constellation_config(constellation_id: str):
     MIN_SRC_DST_LAT_DIFF_DEG = min_src_dst_lat_diff
     MIN_SRC_DST_LON_DIFF_DEG = min_src_dst_lon_diff
     LINK_AVAILABILITY_THRESHOLD = link_availability_threshold
+    SATELLITE_LASER_DIRECTION_TYPE = dict(SATELLITE_LASER_DIRECTION_TYPE_BY_CONSTELLATION[constellation_id])
 
 apply_constellation_config(SELECTED_CONSTELLATION_ID)

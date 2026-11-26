@@ -1,0 +1,132 @@
+openapi: 3.0.3
+info:
+  title: Data Generation UI API
+  version: 1.0.0
+  description: API contract for multilayer generative data visualization and acceptance reporting.
+servers:
+  - url: /api/v1
+tags:
+  - name: DataGeneration
+paths:
+  /data-generation/datasets:
+    post:
+      tags: [DataGeneration]
+      summary: Create a dataset generation job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  type: string
+                  enum: [cvae, physics]
+                spec:
+                  type: object
+              required: [mode, spec]
+      responses:
+        '200':
+          description: Job accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobId: { type: string }
+                  datasetId: { type: string }
+                  status: { type: string }
+  /data-generation/jobs/{jobId}:
+    get:
+      tags: [DataGeneration]
+      summary: Get job status
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Job status
+  /data-generation/datasets/{datasetId}/summary:
+    get:
+      tags: [DataGeneration]
+      summary: Get dataset summary
+      parameters:
+        - in: path
+          name: datasetId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Dataset summary
+  /data-generation/datasets/{datasetId}/series:
+    get:
+      tags: [DataGeneration]
+      summary: Get multilayer series data
+      parameters:
+        - in: path
+          name: datasetId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: layer
+          schema:
+            type: string
+            enum: [environment, physical, network, all]
+        - in: query
+          name: entityIds
+          schema: { type: string }
+        - in: query
+          name: metrics
+          schema: { type: string }
+        - in: query
+          name: startStep
+          schema: { type: integer, minimum: 0 }
+        - in: query
+          name: endStep
+          schema: { type: integer, minimum: 0 }
+      responses:
+        '200':
+          description: Series payload
+  /data-generation/datasets/{datasetId}/association:
+    post:
+      tags: [DataGeneration]
+      summary: Fit cross-layer association model
+      parameters:
+        - in: path
+          name: datasetId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Association result
+  /data-generation/datasets/{datasetId}/validation:
+    post:
+      tags: [DataGeneration]
+      summary: Run physical-consistency and cross-layer validation
+      parameters:
+        - in: path
+          name: datasetId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Validation report
+  /data-generation/datasets/{datasetId}/export:
+    get:
+      tags: [DataGeneration]
+      summary: Export acceptance evidence
+      parameters:
+        - in: path
+          name: datasetId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: format
+          schema:
+            type: string
+            enum: [json, markdown, csv]
+      responses:
+        '200':
+          description: Export file stream

@@ -3,31 +3,46 @@ import threading
 import datetime
 import math
 import logging
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from collections import deque
 from pprint import pformat
 import numpy as np
-import os
 
 
 # [可以直接放在文件顶部引入，告别循环依赖]
-from src.simulation.topology_link_state import init_walker_topology, update_topology_snapshot
+from src.simulation.topology_link_state import (
+    evaluate_link_physics_batch,
+    init_walker_topology,
+    laser_type_for_link,
+    update_topology_snapshot,
+)
 from src.simulation.constellation import CommunicationConstellation, load_satellites_from_tle
 from src.utils.orbit_calculator import calculate_satellite_coordinates
 from src.simulation.background_traffic_generation import background_traffic_generation
-from src.simulation.routing_demand_generation import routing_demand_generation
 from src.simulation.groundstation_number_generation import update_ground_station_numbers
 from src.algos.link_prediction.prediction_interface import LinkPredictor
 from src.algos.top_reconstruction.reconstruction_interface import reconstruct_topology
-from src.algos.task_planning.path_planning_interface import run_task_planning
-from src.algos.route_planning.routing_interface import route_planning_batch_execution
+from src.algos.top_reconstruction.reconstruction_config import TopReconstructionConfig
+from src.algos.top_reconstruction.src.adapters import normalize_topology
+from src.algos.top_reconstruction.src.business_demand_intensity import compute_business_demand_intensity
+from src.algos.top_reconstruction.src.core_nodes import build_business_demand_source_destination_pairs
+from src.algos.link_prediction.interface import adapt_scfe_output, link_states_from_topology
+from src.algos.sensing_monitoring import SensingMonitor, run_sensing_cycle
+from src.algos.capacity_evaluation import evaluate as evaluate_capacity, lambda_star
 
 import src.config as config
 
-from src.simulation.data_model import NodeAttribute, SatelliteNodeState, TopologyState, LinksQualitiesValue
+from src.simulation.data_model import (
+    LaserConfig,
+    LinksQualitiesValue,
+    NodeAttribute,
+    SatelliteNodeState,
+    TopologyState,
+)
 
 logger = logging.getLogger(__name__)
+
+CAPACITY_V2_EMIT_LEGACY_ONLY = bool(getattr(config, "CAPACITY_V2_EMIT_LEGACY_ONLY", True))
 
 class ReadWriteLock:
     def __init__(self):
@@ -84,10 +99,6 @@ class SimulationEngine:
         # 星座对象，在 initialize_constellation 中赋值，供位置更新使用
         self.constellation = None
 
-        # 任务规划队列及锁
-        self.task_queue = []
-        self.task_queue_lock = threading.Lock()
-
         # 记录仿真的起始真实时间 (UTC datetime)，用于与任务的 ArrivalTime 比对
         self.sim_start_utctime = None
 
@@ -105,9 +116,6 @@ class SimulationEngine:
         self._macro_thread = None
         self._micro_thread = None
 
-        # 专门用于处理耗时任务规划的线程池（避免阻塞微周期主循环）
-        self.task_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="TaskPlanner")
-
         # 30 micro-cycle frames: 5s * 30 = 150s macro-cycle history.
         self._prediction_buffer = deque(maxlen=30)
 
@@ -116,30 +124,41 @@ class SimulationEngine:
         self._last_energy_update_timestamp_ms = None
         self._last_topology_reconstruction_result = None
         self._ground_station_min_elevation_deg = float(config.min_elevation_deg)
+        self.task_list = []
+
+        # 感知监测（算法一）、表2-2 链路状态记录、容量与效能评估结果
+        self.sensing_monitor = SensingMonitor()
+        self.latest_sensing_status = None
+        self.latest_prediction_result = None
+        self.latest_link_state_records = []
+        self.latest_capacity_evaluation = None
 
         self._active_prediction_accuracy = None
         self._pending_prediction_accuracy = None
+        self._last_node_flow_by_sat = {}
+        self._link_history_by_key = {}
+        self._cum_flow_gb_by_key = {}
+        self._last_cum_flow_time_by_key = {}
+        self._laser_default_type = str(getattr(config, "LASER_DEFAULT_TYPE", "STD"))
+        self._laser_profile_presets = dict(getattr(config, "LASER_CONFIG_PRESETS", {}) or {})
         
         # [新增] 缓存上一个周期的状态，用于计算增量(Delta)给前端
         self._last_notified_links = {}  # { "src_dst": attr_hash }
         self._last_topo_time = 0.0
         self._last_plan_time = 0.0
         self._last_pred_acc = 98.5
-        self._task_debug_print_limit = 5
-        self._queue_log_interval_seconds = 30
         self._micro_log_interval_seconds = 30
-        self._last_queue_log_bucket = -1
         self._last_micro_log_bucket = -1
 
 
     def initialize_constellation(self, timestamp, constellation_id, tle_file_path, task_list):
         """
-        初始化阶段：加载 TLE、构建星座对象、生成拓扑、产生首次背景流量、装载任务队列。
+        初始化阶段：加载 TLE、构建星座对象、生成拓扑、产生首次背景流量。
         :param timestamp:        仿真起始 UTC 时间 (datetime)
         :param constellation_id: 星座 ID (str)
         :param tle_file_path:    TLE 文件路径 (str)
-        :param task_list:        首批任务列表 (List[dict])
-        :return: topology_state, node_state, task_queue
+        :param task_list:        保留参数（当前版本不执行路径/路由任务）
+        :return: topology_state, node_state, []
         """
         logger.info(f"[{timestamp}] 初始化卫星星座: {constellation_id}, 加载TLE文件: {tle_file_path}")
 
@@ -170,7 +189,11 @@ class SimulationEngine:
                 flow=0.0,
                 energy_ratio=1.0,
                 congestion=0.0,
-                heat_flow=0.0
+                heat_flow=0.0,
+                ambient_temperature=293.15,
+                terminal_temperature_list=[293.15],
+                node_load_ratio=0.0,
+                load_fluctuation=0.0,
             )
 
         update_ground_station_numbers(
@@ -192,17 +215,24 @@ class SimulationEngine:
             satelliteList=sats
         )
 
-        # 3. 用 TopologyState dataclass 初始化拓扑
+        # 3. 用 TopologyState dataclass 初始化拓扑，并按 T=0 位置刷新链路距离
+        #    （否则首次背景流量与 T=0 预测帧使用的链路距离全为 0）
         topology_state = TopologyState(
             constellation_id=constellation_id,
             timestamp=unix_timestamp_ms,
             new_topology=init_walker_topology(self.constellation)
         )
+        self.constellation.update_constellation_time(timestamp)
+        update_topology_snapshot(self.constellation, timestamp, topology=topology_state.new_topology)
 
         # 将初始化数据写入引擎全局状态
         with self.state_rw_lock.write_lock():
             self.topology_state = topology_state
             self.node_state = node_state
+            self._last_node_flow_by_sat = {
+                sid: float(attr.flow)
+                for sid, attr in node_state.sat_list.items()
+            }
 
         # 4. 产生一次初始的背景流量
         try:
@@ -211,28 +241,14 @@ class SimulationEngine:
         except Exception as e:
             logger.error(f"[{self.current_time}s] 初始化阶段: 背景流量调用异常 - {e}")
 
-        # 5. 将首批任务装入 task_queue
-        if task_list:
-            with self.task_queue_lock:
-                for task in task_list:
-                    self.task_queue.append(task)
-                self.task_queue.sort(key=self._task_queue_sort_key)
-            logger.info(f"[{self.current_time}s] 初始化阶段: 首批 {len(task_list)} 个任务已加入队列")
-            
-            # [新增] 真正入库，防止后置结果校验外键失败
-            try:
-                from simulation_api.db_services import save_planning_demands
-                save_planning_demands.delay(constellation_id, task_list)
-            except Exception as e:
-                logger.error(f"[{self.current_time}s] 任务需求落库异常: {e}")
+        self.task_list = list(task_list or [])
+        if self.task_list:
+            logger.info(
+                f"[{self.current_time}s] 初始化阶段收到 {len(self.task_list)} 个用户业务需求，"
+                "已传入拓扑重构接口（当前版本重构决策尚不使用）"
+            )
 
-            # Deleted:# 记录 T=0 的初始特征帧
-            # Deleted:initial_frame = self._build_prediction_frame()
-            # Deleted:self._prediction_buffer.append(initial_frame)
-            # Deleted:print(
-            # Deleted:f"[{self.current_time}s] 初始化阶段: T=0 初始特征帧插入: {len(self._prediction_buffer)}/30")
-
-        return self.topology_state, self.node_state, self.task_queue
+        return self.topology_state, self.node_state, []
 
     def get_current_states(self):
         """安全地读取当前的核心状态"""
@@ -254,25 +270,6 @@ class SimulationEngine:
         if max_value is not None:
             result = min(float(max_value), result)
         return result
-
-    def _route_metric_values(self, raw_value, hop_count, scalar_transform=None, min_value=None, max_value=None):
-        if hop_count <= 0:
-            return []
-
-        if isinstance(raw_value, (list, tuple, np.ndarray)):
-            values = [
-                self._coerce_float(item, min_value=min_value, max_value=max_value)
-                for item in list(raw_value)[:hop_count]
-            ]
-            if len(values) < hop_count:
-                values.extend([0.0] * (hop_count - len(values)))
-            return values
-
-        scalar = self._coerce_float(raw_value, min_value=min_value, max_value=max_value)
-        if scalar_transform is not None:
-            scalar = scalar_transform(scalar)
-            scalar = self._coerce_float(scalar, min_value=min_value, max_value=max_value)
-        return [scalar] * hop_count
 
     @staticmethod
     def _timestamp_ms(value):
@@ -308,42 +305,6 @@ class SimulationEngine:
             return dt.replace(tzinfo=datetime.timezone.utc)
         return dt.astimezone(datetime.timezone.utc)
 
-    def _task_arrival_sim_seconds(self, task):
-        value = task.get("arrival_sim_time", task.get("ArrivalTime", 0))
-
-        if isinstance(value, (int, float)):
-            numeric_value = float(value)
-            # Guard against accidentally passing Unix milliseconds as sim-seconds.
-            if numeric_value > 1e10 and not task.get("_arrival_numeric_warned"):
-                task["_arrival_numeric_warned"] = True
-                logger.warning(
-                    f"[{self.current_time}s] [Warning] task {task.get('TaskId')} "
-                    f"ArrivalTime appears numeric-milliseconds ({numeric_value}); "
-                    "this is treated as sim-seconds and may never execute."
-                )
-            return max(0.0, numeric_value)
-
-        if value is None:
-            return 0.0
-
-        if self.sim_start_utctime is None:
-            return 0.0
-
-        try:
-            arrival_utc = self._to_utc_datetime(value)
-            start_utc = self._to_utc_datetime(self.sim_start_utctime)
-        except (TypeError, ValueError) as exc:
-            logger.warning(
-                f"[{self.current_time}s] [Warning] task {task.get('TaskId')} "
-                f"arrival_sim_time parse failed ({exc}); executing immediately."
-            )
-            return 0.0
-
-        return max(0.0, (arrival_utc - start_utc).total_seconds())
-
-    def _task_queue_sort_key(self, task):
-        return (-task.get("TaskPriority", 0), self._task_arrival_sim_seconds(task))
-
     def _should_log_interval(self, interval_seconds, bucket_attr):
         interval = max(int(interval_seconds), 1)
         bucket = int(self.current_time // interval)
@@ -352,12 +313,6 @@ class SimulationEngine:
             setattr(self, bucket_attr, bucket)
             return True
         return False
-
-    def _should_log_queue_summary(self):
-        return self._should_log_interval(
-            self._queue_log_interval_seconds,
-            "_last_queue_log_bucket",
-        )
 
     def _should_log_micro_summary(self):
         return self._should_log_interval(
@@ -449,11 +404,16 @@ class SimulationEngine:
         if self.node_state is None:
             return
         capacity = max(float(getattr(config, "MAX_NODE_FLOW_GBPS", 18.0)), 1e-9)
-        for sat_attr in self.node_state.sat_list.values():
-            sat_attr.flow = max(0.0, float(sat_attr.flow))
-            utilization = sat_attr.flow / capacity
-            sat_attr.congestion = utilization
+        for sat_id, sat_attr in self.node_state.sat_list.items():
+            current_flow = max(0.0, float(sat_attr.flow))
+            prev_flow = self._last_node_flow_by_sat.get(sat_id, current_flow)
+            sat_attr.flow = current_flow
+            utilization = current_flow / capacity
+            sat_attr.congestion = self._clamp01(utilization)
             sat_attr.heat_flow = self._clamp01(utilization)
+            sat_attr.node_load_ratio = self._clamp01(utilization)
+            sat_attr.load_fluctuation = current_flow - prev_flow
+            self._last_node_flow_by_sat[sat_id] = current_flow
 
     def _sync_node_energy_locked(self, current_utc):
         if self.node_state is None:
@@ -478,20 +438,89 @@ class SimulationEngine:
                 delta += charge_rate * elapsed_seconds
             sat_attr.energy_ratio = self._clamp01(float(sat_attr.energy_ratio) + delta)
 
-    def _sync_link_load_metrics_locked(self, link_attr):
-        capacity = max(float(getattr(config, "MAX_LINK_SPEED_GBPS", 10.0)), 1e-9)
-        link_attr.link_capacity = capacity
-        link_attr.current_flow = max(0.0, float(link_attr.current_flow))
-        utilization = link_attr.current_flow / capacity
-        link_attr.left_capacity = self._clamp01(1.0 - utilization)
-        link_attr.heat_value = self._clamp01(utilization)
+    def _laser_config_for_type(self, laser_type):
+        """返回该激光器类型的 LaserConfig（同类型共享一个只读实例）。"""
+        cache = self.__dict__.setdefault("_laser_config_cache", {})
+        if laser_type not in cache:
+            preset = self._laser_profile_presets.get(laser_type)
+            if preset is None:
+                preset = self._laser_profile_presets.get(self._laser_default_type, {})
+            cache[laser_type] = LaserConfig.model_validate(dict(preset))
+        return cache[laser_type]
 
     def _sync_topology_load_metrics_locked(self):
+        """全网链路状态同步：激光器预设 + 当前几何 + 当前流量 → 物理层/网络层量。
+
+        物理量统一由 :func:`evaluate_link_physics_batch` 计算；激光器类型按链路方向
+        确定，拓扑重构新建的链路同样拿到正确的预设。
+        """
         if self.topology_state is None:
             return
-        for links in self.topology_state.new_topology.values():
-            for link_attr in links.values():
-                self._sync_link_load_metrics_locked(link_attr)
+        keys, attrs = [], []
+        for src_id, links in self.topology_state.new_topology.items():
+            for dst_id, link_attr in links.items():
+                laser_type = laser_type_for_link(src_id, dst_id)
+                link_attr.laser_type = laser_type
+                link_attr.laser_config = self._laser_config_for_type(laser_type)
+                link_attr.current_flow = max(0.0, float(link_attr.current_flow))
+                keys.append(f"{src_id}_{dst_id}")
+                attrs.append(link_attr)
+        if not attrs:
+            return
+
+        physics = evaluate_link_physics_batch(
+            [a.link_distance for a in attrs],
+            [a.laser_config for a in attrs],
+            [a.current_flow for a in attrs],
+        )
+        rated_capacity = max(float(getattr(config, "MAX_LINK_SPEED_GBPS", 100.0)), 1e-9)
+        current_sim_time = float(self.current_time)
+        delay_total = (
+            physics["link_propagation_delay"] + physics["queue_delay"] + physics["transmission_delay"]
+        )
+
+        for i, (link_key, link_attr) in enumerate(zip(keys, attrs)):
+            current_flow = link_attr.current_flow
+            usable_capacity = float(physics["achievable_rate"][i])
+            link_attr.max_capacity = rated_capacity
+            link_attr.link_capacity = usable_capacity
+            link_attr.achievable_rate = usable_capacity
+
+            utilization = current_flow / usable_capacity if usable_capacity > 0.0 else 1.0
+            link_attr.left_capacity = self._clamp01(1.0 - utilization)
+            link_attr.heat_value = self._clamp01(utilization)
+            plr = float(physics["packet_loss_rate"][i])
+            link_attr.throughput = min(current_flow, usable_capacity) * (1.0 - plr)
+
+            link_attr.path_loss = float(physics["path_loss"][i])
+            link_attr.snr = float(physics["snr"][i])
+            link_attr.ber = float(physics["ber"][i])
+            link_attr.packet_loss_rate = plr
+            link_attr.link_propagation_delay = float(physics["link_propagation_delay"][i])
+            link_attr.transmission_delay = float(physics["transmission_delay"][i])
+            link_attr.queue_delay = float(physics["queue_delay"][i])
+            link_attr.delay = float(delay_total[i])
+
+            # 累计流量：Gbps × s → Gb，/8 → GB
+            prev_cum_time = self._last_cum_flow_time_by_key.get(link_key, current_sim_time)
+            delta_seconds = max(0.0, current_sim_time - prev_cum_time)
+            previous_cum_gb = self._cum_flow_gb_by_key.get(link_key, max(0.0, float(link_attr.cum_flow)))
+            cum_flow_gb = previous_cum_gb + current_flow * delta_seconds / 8.0
+            link_attr.cum_flow = cum_flow_gb
+            self._cum_flow_gb_by_key[link_key] = cum_flow_gb
+            self._last_cum_flow_time_by_key[link_key] = current_sim_time
+
+            # 负载波动与时延抖动：相对上一个仿真时刻（同一时刻内多次同步不推进基准）
+            history = self._link_history_by_key.get(link_key)
+            # history = [上一时刻流量, 上一时刻时延, 当前时刻, 当前流量, 当前时延]
+            if history is None or history[2] != current_sim_time:
+                previous = (history[3], history[4]) if history is not None else (current_flow, link_attr.delay)
+                history = [previous[0], previous[1], current_sim_time, current_flow, link_attr.delay]
+            else:
+                history[3], history[4] = current_flow, link_attr.delay
+            self._link_history_by_key[link_key] = history
+            link_attr.load_fluctuation = current_flow - history[0]
+            link_attr.delay_jitter = abs(link_attr.delay - history[1])
 
     def _refresh_ground_station_numbers_locked(self):
         if self.node_state is None:
@@ -512,39 +541,6 @@ class SimulationEngine:
         #     assigned_count = self._refresh_ground_station_numbers_locked()
         #     self._sync_timestamps_locked(current_utc)
         # return assigned_count
-
-    def _apply_route_result_metrics_locked(self, route_path, result):
-        if not result or self.topology_state is None or len(route_path) < 2:
-            return
-        hop_count = max(len(route_path) - 1, 1)
-        queue_delays = self._route_metric_values(
-            result.get("QueueDelay", 0.0),
-            hop_count,
-            scalar_transform=lambda value: value / hop_count,
-            min_value=0.0,
-        )
-        transmission_delays = self._route_metric_values(
-            result.get("TransmissionDelay", 0.0),
-            hop_count,
-            scalar_transform=lambda value: value / hop_count,
-            min_value=0.0,
-        )
-        packet_loss_rates = self._route_metric_values(
-            result.get("PacketLossRate", 0.0),
-            hop_count,
-            scalar_transform=lambda value: 1.0 - math.pow(1.0 - value, 1.0 / hop_count),
-            min_value=0.0,
-            max_value=1.0,
-        )
-
-        local_topo = self.topology_state.new_topology
-        for i in range(hop_count):
-            u, v = str(route_path[i]), str(route_path[i + 1])
-            if u in local_topo and v in local_topo[u]:
-                link_attr = local_topo[u][v]
-                link_attr.queue_delay = queue_delays[i]
-                link_attr.transmission_delay = transmission_delays[i]
-                link_attr.packet_loss_rate = packet_loss_rates[i]
 
     def notify_backend(self, msg_type, data):
         """统一的后端数据回传接口"""
@@ -573,69 +569,80 @@ class SimulationEngine:
                 if msg_type == "link_prediction_result":
                     # 方案二：后端定向推送（聚焦强业务/热点链路），防止 websocket [Errno 104]
                     hot_links_topology = []
+
+                    def _to_float_or_none(value):
+                        try:
+                            f = float(value)
+                        except (TypeError, ValueError):
+                            return None
+                        if not math.isfinite(f):
+                            return None
+                        return f
+
+                    def _iter_topology_links(topology_dict):
+                        if not isinstance(topology_dict, dict):
+                            return
+                        for src_sat_str, raw_links in topology_dict.items():
+                            if isinstance(raw_links, dict):
+                                for dst_sat_str, metrics in raw_links.items():
+                                    yield src_sat_str, dst_sat_str, metrics
+                                continue
+                            for dst_item in (raw_links or []):
+                                if not isinstance(dst_item, (list, tuple)) or len(dst_item) < 2:
+                                    continue
+                                yield src_sat_str, dst_item[0], dst_item[1]
+
                     # 我们过滤出 HeatValue > 0的（或者有实际业务流量趋势的）链路，
                     # 这样可以从14400条直接降至产生拥塞预警的几十条，极大减轻前端压力
                     if isinstance(data, dict) and "LinksPredTopology" in data:
                         for step_data in data["LinksPredTopology"]:
-                            hot_links_for_step = []
                             load_links_for_step = []
-                            for src_sat_str, dst_list in step_data.get("Topology", {}).items():
-                                for dst_item in dst_list:
-                                    if len(dst_item) >= 2:
-                                        dst_sat_str, metrics = dst_item[0], dst_item[1]
-                                        link_item = {
-                                            "src": src_sat_str,
-                                            "dst": dst_sat_str,
-                                            "metrics": {
-                                                "HeatValue": metrics.get("HeatValue", 0.0),
-                                                "QueueDelay": metrics.get("QueueDelay", 0.0),
-                                                "LinkAvailability": metrics.get("LinkAvailability", 1.0),
-                                                "Survival": metrics.get("Survival", 1.0),
-                                                "Capacity": metrics.get("Capacity", 10.0)
-                                            }
-                                        }
-                                        load_links_for_step.append(link_item)
-                                        # 定义拥塞/热点规则：大幅提高过滤阈值，避免 Websocket Payload 过大导致断开
-                                        # (仅提取 HeatValue > 0.5 或者 排队延迟 > 50 的严峻拥塞链路)
-                                        if metrics.get("HeatValue", 0.0) > 0.5 or metrics.get("QueueDelay", 0.0) > 50:
-                                            hot_links_for_step.append(link_item)
+                            step_baseline_precision = _to_float_or_none(step_data.get("BaselinePrecision"))
+                            if step_baseline_precision is None:
+                                step_baseline_precision = 0.0
+                            step_scfe_precision = _to_float_or_none(step_data.get("SCFEPrecision"))
+                            if step_scfe_precision is None:
+                                step_scfe_precision = 0.0
 
+                            for src_sat_str, dst_sat_str, metrics in _iter_topology_links(step_data.get("Topology", {})):
+                                if not isinstance(metrics, dict):
+                                    continue
+                                link_item = {
+                                    "src": src_sat_str,
+                                    "dst": dst_sat_str,
+                                    "metrics": {
+                                        "HeatValue": metrics.get("HeatValue", 0.0),
+                                        "QueueDelay": metrics.get("QueueDelay", 0.0),
+                                        "LinkAvailability": metrics.get("LinkAvailability", 1.0),
+                                        "Survival": metrics.get("Survival", 1.0),
+                                        "Capacity": metrics.get("Capacity", 10.0),
+                                        "PredFlow": metrics.get("PredFlow", 0.0),
+                                        "AchievableRate": metrics.get("AchievableRate", 0.0),
+                                        "DelayJitter": metrics.get("DelayJitter", 0.0),
+                                    }
+                                }
+                                load_links_for_step.append(link_item)
                             selected_links = []
                             mode = "load"
                             load_links_for_step.sort(
                                 key=lambda x: (
-                                    x["metrics"].get("HeatValue", 0.0),
-                                    x["metrics"].get("QueueDelay", 0.0)
+                                    float(x["metrics"].get("PredFlow", 0.0) or 0.0),
+                                    float(x["metrics"].get("HeatValue", 0.0) or 0.0),
+                                    float(x["metrics"].get("QueueDelay", 0.0) or 0.0),
                                 ),
                                 reverse=True
                             )
-
-                            if hot_links_for_step:
-                                # 高危优先：按热度从高到低排序，每步最多抽取 Top 50
-                                hot_links_for_step.sort(key=lambda x: x["metrics"]["HeatValue"], reverse=True)
-                                selected_links = hot_links_for_step[:50]
-                                mode = "risk"
-
-                                # 若高危链路不足 5 条，则用同一步最大负载链路补齐至 5 条（若可用）
-                                if len(selected_links) < 5 and load_links_for_step:
-                                    existed = {(x["src"], x["dst"]) for x in selected_links}
-                                    for cand in load_links_for_step:
-                                        cand_key = (cand["src"], cand["dst"])
-                                        if cand_key in existed:
-                                            continue
-                                        selected_links.append(cand)
-                                        existed.add(cand_key)
-                                        if len(selected_links) >= 5:
-                                            break
-                            elif load_links_for_step:
-                                # 无高危时回退：发送最大负载 Top 50，供前端显示 Top 5
+                            if load_links_for_step:
+                                # 真正按预测负载排序后发送 Top50，前端取 Top5 做“最大负载链路前5”。
                                 selected_links = load_links_for_step[:50]
 
                             if selected_links:
                                 hot_links_topology.append({
                                     "Timestamp": step_data.get("Timestamp"),
                                     "HotLinks": selected_links,
-                                    "Mode": mode
+                                    "Mode": mode,
+                                    "BaselinePrecision": step_baseline_precision,
+                                    "SCFEPrecision": step_scfe_precision,
                                 })
                     
                     import json
@@ -676,232 +683,6 @@ class SimulationEngine:
             except Exception as e:
                 logger.error(f"[Engine] 回调后端失败: {e}")
 
-    def receive_backend_task_planning(self, task_planning_params):
-        """监听并处理后端发来的实时任务规划请求"""
-        task_list = task_planning_params.get("TaskList", [])
-        logger.info(f"[{self.current_time}s] [Backend] 收到任务规划请求, 数量: {len(task_list)}")
-
-        debug_preview = []
-        queue_before = 0
-        immediate_due_count = 0
-        with self.task_queue_lock:
-            queue_before = len(self.task_queue)
-            for task in task_list:
-                arrival_sim_time = self._task_arrival_sim_seconds(task)
-                task["arrival_sim_time"] = arrival_sim_time
-                self.task_queue.append(task)
-
-                if arrival_sim_time <= self.current_time:
-                    immediate_due_count += 1
-
-                if len(debug_preview) < self._task_debug_print_limit:
-                    task_id = task.get("TaskId")
-                    arrival_raw = task.get("ArrivalTime")
-                    eta_seconds = arrival_sim_time - self.current_time
-                    debug_preview.append(
-                        f"TaskId={task_id}, ArrivalTime={arrival_raw}, "
-                        f"arrival_sim_time={arrival_sim_time:.3f}s, eta={eta_seconds:.3f}s"
-                    )
-
-                if arrival_sim_time > self.duration:
-                    logger.warning(
-                        f"[{self.current_time}s] [Warning] task {task.get('TaskId')} "
-                        f"arrival_sim_time={arrival_sim_time:.3f}s exceeds simulation duration={self.duration}s; "
-                        "task may not execute in this run."
-                    )
-
-            self.task_queue.sort(key=self._task_queue_sort_key)
-
-            if self.task_queue:
-                next_task = self.task_queue[0]
-                logger.info(
-                    f"[{self.current_time}s] [TaskQueue] 入队后队列长度={len(self.task_queue)}, "
-                    f"next_task={next_task.get('TaskId')}, "
-                    f"next_arrival_sim_time={self._task_arrival_sim_seconds(next_task):.3f}s"
-                )
-                logger.info(
-                    f"[{self.current_time}s] [TaskQueue] 入队摘要: before={queue_before}, "
-                    f"added={len(task_list)}, after={len(self.task_queue)}, "
-                    f"immediate_due={immediate_due_count}"
-                )
-
-        if debug_preview:
-            logger.debug(f"[{self.current_time}s] [TaskQueue] 本次入队任务预览(最多{self._task_debug_print_limit}条):")
-            for line in debug_preview:
-                logger.debug(f"  - {line}")
-            
-        if task_list:
-            try:
-                from simulation_api.db_services import save_planning_demands
-                save_planning_demands.delay(self.constellation_id, task_list)
-            except Exception as e:
-                logger.error(f"[{self.current_time}s] 实时任务需求落库异常: {e}")
-
-    def _process_pending_tasks(self):
-        """检查并执行到达时间的任务"""
-        tasks_to_execute = []
-        queue_before = 0
-        with self.task_queue_lock:
-            queue_before = len(self.task_queue)
-            remaining_tasks = []
-            for task in self.task_queue:
-                arrival_sim_time = self._task_arrival_sim_seconds(task)
-                task["arrival_sim_time"] = arrival_sim_time
-
-                if self.current_time >= arrival_sim_time:
-                    tasks_to_execute.append(task)
-                else:
-                    remaining_tasks.append(task)
-            self.task_queue = remaining_tasks
-
-        should_log_queue = queue_before > 0 and self._should_log_queue_summary()
-        if should_log_queue:
-            next_remaining = None
-            if self.task_queue:
-                next_remaining = min(
-                    self.task_queue,
-                    key=lambda item: item.get("arrival_sim_time", self._task_arrival_sim_seconds(item))
-                )
-
-            logger.info(
-                f"[{self.current_time}s] [TaskQueue] 检查完成: before={queue_before}, "
-                f"due={len(tasks_to_execute)}, remaining={len(self.task_queue)}"
-            )
-            if next_remaining is not None:
-                logger.debug(
-                    f"[{self.current_time}s] [TaskQueue] 下一个待执行任务: "
-                    f"TaskId={next_remaining.get('TaskId')}, "
-                    f"arrival_sim_time={next_remaining.get('arrival_sim_time', 0):.3f}s, "
-                    f"eta={(next_remaining.get('arrival_sim_time', 0) - self.current_time):.3f}s"
-                )
-
-        if tasks_to_execute:
-            due_ids = [str(task.get("TaskId")) for task in tasks_to_execute[:self._task_debug_print_limit]]
-            logger.info(
-                f"[{self.current_time}s] [TaskQueue] 本帧触发执行任务数={len(tasks_to_execute)}, "
-                f"TaskIds(sample)={due_ids}"
-            )
-        elif queue_before > 0 and should_log_queue:
-            logger.info(
-                f"[{self.current_time}s] [TaskQueue] 本帧无到期任务，等待后续周期触发执行"
-            )
-
-        if tasks_to_execute:
-            # 定义一个内部函数供线程池后台执行
-            def _build_task_planning_failed_result(planning_task, reason):
-                try:
-                    demand_gbps = float(planning_task.get("DemandGbps", 0.0) or 0.0)
-                except (TypeError, ValueError):
-                    demand_gbps = 0.0
-
-                return {
-                    "task_id": planning_task.get("TaskId", "unknown"),
-                    "constellation": str(self.constellation_id),
-                    "src": None if planning_task.get("SourceGroundStationId") is None else str(planning_task.get("SourceGroundStationId")),
-                    "dst": None if planning_task.get("TargetGroundStationId") is None else str(planning_task.get("TargetGroundStationId")),
-                    "demand_gbps": demand_gbps,
-                    "reason": reason,
-                    "avg_delay_ms": None,
-                    "capacity_max_util_after": None,
-                    "capacity_status": "FAILED",
-                    "capacity_total_overflow": None,
-                    "decision_total_ms": 0.0,
-                    "jitter_ms": None,
-                    "max_link_utilization_after": None,
-                    "overflow_amount": None,
-                    "allocations": [],
-                }
-
-            def _notify_task_planning_result(result):
-                if not result:
-                    return
-
-                self.notify_backend("task_planning_result", result)
-                try:
-                    from simulation_api.db_services import save_task_planning_results
-                    save_task_planning_results.delay(result)
-                except Exception as e:
-                    logger.error(f"[{self.current_time}s] 任务规划结果异步落库异常: {e}")
-
-            def _async_run_planning(planning_task):
-                task_id = planning_task.get("TaskId")
-                task_type = planning_task.get("TaskType")
-                arrival_sim_time = self._task_arrival_sim_seconds(planning_task)
-                wait_seconds = self.current_time - arrival_sim_time
-                logger.info(
-                    f"[{self.current_time}s] [TaskExec] 开始执行任务: "
-                    f"TaskId={task_id}, TaskType={task_type}, "
-                    f"arrival_sim_time={arrival_sim_time:.3f}s, wait={wait_seconds:.3f}s"
-                )
-                try:
-                    # 如果是框架自带的流量撤销任务，直接走状态更新接口还原流量，跳过规划算法
-                    if planning_task.get("TaskType") == "TeardownFlow":
-                        self.update_topology_link_flow_state(
-                            route_path=planning_task.get("route_path"),
-                            timestamp=None, 
-                            flow_size=planning_task.get("flow_size"),  # 此处传过来已经是负数
-                            duration=0  # 置0防止无限递归产生下一次清理任务
-                        )
-                        logger.info(
-                            f"[{self.current_time}s] [TaskExec] TeardownFlow 执行完成: TaskId={task_id}"
-                        )
-                        return
-                    
-                    # 每次执行单条任务时获取最新的一瞥状态，而不是成百上千任务共用最开始的老状态
-                    t_topo, t_node = self.get_current_states()
-                    t_start_plan = time.time()
-                    res = self.path_planning_execution(t_topo, t_node, planning_task)
-                    self._last_plan_time = (time.time() - t_start_plan) * 1000
-                    logger.info(
-                        f"[{self.current_time}s] [TaskExec] 任务执行完成: "
-                        f"TaskId={task_id}, cost_ms={self._last_plan_time:.2f}, "
-                        f"capacity_status={res.get('capacity_status') if isinstance(res, dict) else 'N/A'}"
-                    )
-                    # 成功结果也必须上报，否则前端批次会长期处于 missing 状态
-                    success_result = dict(res or {})
-                    success_result.setdefault("task_id", planning_task.get("TaskId", "unknown"))
-                    success_result.setdefault("constellation", str(self.constellation_id))
-                    success_result.setdefault(
-                        "src",
-                        None if planning_task.get("SourceGroundStationId") is None else str(planning_task.get("SourceGroundStationId"))
-                    )
-                    success_result.setdefault(
-                        "dst",
-                        None if planning_task.get("TargetGroundStationId") is None else str(planning_task.get("TargetGroundStationId"))
-                    )
-                    success_result.setdefault("demand_gbps", float(planning_task.get("DemandGbps", 0.0) or 0.0))
-                    success_result.setdefault("decision_total_ms", float(self._last_plan_time or 0.0))
-                    success_result.setdefault("capacity_status", success_result.get("capacity_status", "OK"))
-                    success_result.setdefault("allocations", success_result.get("allocations", []))
-                    _notify_task_planning_result(success_result)
-                except Exception as e:
-                    logger.exception(
-                        f"[_process_pending_tasks] 任务 {planning_task.get('TaskId')} 执行异常: {e}"
-                    )
-                    failed_result = _build_task_planning_failed_result(
-                        planning_task,
-                        f"worker execution error: {str(e)}"
-                    )
-                    _notify_task_planning_result(failed_result)
-
-            for task in tasks_to_execute:
-                # 瞬间投递，不阻塞微周期
-                logger.info(
-                    f"[{self.current_time}s] [TaskQueue] 提交任务到执行线程池: TaskId={task.get('TaskId')}"
-                )
-                # self.task_executor.submit(_async_run_planning, task)
-                try:
-                    self.task_executor.submit(_async_run_planning, task)
-                except Exception as e:
-                    logger.exception(
-                        f"[_process_pending_tasks] submit failed for task {task.get('TaskId')}: {e}"
-                    )
-                    failed_result = _build_task_planning_failed_result(
-                        task,
-                        f"task executor submit error: {str(e)}"
-                    )
-                    _notify_task_planning_result(failed_result)
-
     # """
     # 根据zz的拓扑状态更新之后接入
     # """
@@ -935,35 +716,61 @@ class SimulationEngine:
                                 "dst_sat": dst_id,
                                 "srcSat": src_id,
                                 "dstSat": dst_id,
+                                "laser_type": attr.laser_type,
+                                "laser_config": attr.laser_config.dict(by_alias=True),
                                 "distance": attr.link_distance,
                                 "link_distance": attr.link_distance,
                                 "current_flow": attr.current_flow,
                                 "left_capacity": attr.left_capacity,
                                 "link_capacity": attr.link_capacity,
+                                "max_capacity": attr.max_capacity,
+                                "cum_flow": attr.cum_flow,
+                                "path_loss": attr.path_loss,
+                                "snr": attr.snr,
                                 "link_propagation_delay": attr.link_propagation_delay,
                                 "queue_delay": attr.queue_delay,
                                 "transmission_delay": attr.transmission_delay,
+                                "delay": attr.delay,
+                                "delay_jitter": attr.delay_jitter,
+                                "ber": attr.ber,
                                 "packet_loss_rate": attr.packet_loss_rate,
+                                "throughput": attr.throughput,
                                 "heat_value": attr.heat_value,
+                                "achievable_rate": attr.achievable_rate,
+                                "load_fluctuation": attr.load_fluctuation,
                                 # CamelCase aliases for direct UI consumption.
+                                "LaserConfig": attr.laser_config.dict(by_alias=True),
+                                "LaserType": attr.laser_type,
                                 "LinkDistance": attr.link_distance,
+                                "MaxCapacity": attr.max_capacity,
                                 "CurrentFlow": attr.current_flow,
+                                "CumFlow": attr.cum_flow,
                                 "LeftCapacity": attr.left_capacity,
                                 "LinkCapacity": attr.link_capacity,
+                                "PathLoss": attr.path_loss,
+                                "SNR": attr.snr,
                                 "LinkPropagationDelay": attr.link_propagation_delay,
                                 "QueueDelay": attr.queue_delay,
                                 "TransmissionDelay": attr.transmission_delay,
+                                "Delay": attr.delay,
+                                "DelayJitter": attr.delay_jitter,
+                                "BER": attr.ber,
                                 "PacketLossRate": attr.packet_loss_rate,
+                                "Throughput": attr.throughput,
                                 "HeatValue": attr.heat_value,
+                                "AchievableRate": attr.achievable_rate,
+                                "LoadFluctuation": attr.load_fluctuation,
                             }
                             link_list.append(link_dict)
                             
                             # 计算增量供前端更新
                             link_key = f"{src_id}_{dst_id}"
                             hash_val = hash(
-                                f"{attr.current_flow}_{attr.left_capacity}_{attr.link_capacity}_"
-                                f"{attr.link_distance}_{attr.link_propagation_delay}_{attr.queue_delay}_"
-                                f"{attr.transmission_delay}_{attr.packet_loss_rate}_{attr.heat_value}"
+                                f"{attr.current_flow}_{attr.left_capacity}_{attr.link_capacity}_{attr.max_capacity}_"
+                                f"{attr.link_distance}_{attr.path_loss}_{attr.snr}_{attr.link_propagation_delay}_"
+                                f"{attr.queue_delay}_{attr.transmission_delay}_{attr.delay}_{attr.delay_jitter}_"
+                                f"{attr.ber}_{attr.packet_loss_rate}_{attr.throughput}_{attr.heat_value}_"
+                                f"{attr.achievable_rate}_{attr.load_fluctuation}_{attr.cum_flow}"
                             )
                             if self._last_notified_links.get(link_key) != hash_val:
                                 delta_links.append(link_dict)
@@ -993,61 +800,6 @@ class SimulationEngine:
 
         # print(f"[{self.current_time}s] 拓扑状态已更新")
 
-    def update_topology_link_flow_state(self, route_path, timestamp, flow_size, duration, route_result=None):
-        """
-        根据路由优化和任务规划执行返回结果，更新拓扑链路属性和节点负载属性。
-        如果 duration > 0，会自动创建一个未来的流量释放任务挂入队列。
-        链路属性：LinkDistance, LinkCapacity, CurrentFlow, LinkPropagationDelay,
-                  QueueDelay, TransmissionDelay, PacketLossRate, HeatValue
-        节点属性：Flow, Congestion
-        
-        """
-        if not route_path or not flow_size:
-            return
-
-        with self.state_rw_lock.write_lock():
-            # 1. 更新节点流量 (Node Flow) - 使用下划线属性访问
-            for sat_id in route_path:
-                sid = str(sat_id)
-                if sid in self.node_state.sat_list:
-                    self.node_state.sat_list[sid].flow += flow_size
-                    # 避免浮点数精度问题变为负数
-                    if self.node_state.sat_list[sid].flow < 0:
-                        self.node_state.sat_list[sid].flow = 0.0
-
-            # 2. 更新链路流量 (Edge Flow) - 使用下划线属性访问
-            local_topo = self.topology_state.new_topology
-            for i in range(len(route_path) - 1):
-                u, v = str(route_path[i]), str(route_path[i+1])
-                if u in local_topo and v in local_topo[u]:
-                    link_attr = local_topo[u][v]
-                    link_attr.current_flow += flow_size
-                    if link_attr.current_flow < 0:
-                        link_attr.current_flow = 0.0
-                    self._sync_link_load_metrics_locked(link_attr)
-                        
-                    # (可选) 在这里基于 current_flow / link_capacity 实时计算拥塞率 (Congestion) 并更新排队丢包率
-
-            self._apply_route_result_metrics_locked(route_path, route_result)
-            self._sync_node_load_metrics_locked()
-            current_utc = timestamp if isinstance(timestamp, datetime.datetime) else self._current_utc()
-            self._sync_timestamps_locked(current_utc)
-
-        # 3. 注册未来自动拆除连接的任务
-        if duration > 0:
-            teardown_task = {
-                "TaskId": f"Teardown_{id(route_path)}",
-                "TaskType": "TeardownFlow",
-                "route_path": route_path,
-                "flow_size": -flow_size,  # 负流量，执行时相减
-                "duration": 0,            # 拆除操作不再产生后续队列
-                "arrival_sim_time": self.current_time + duration,
-                "TaskPriority": 999       # 最高优先级，按时回收资源
-            }
-            with self.task_queue_lock:
-                self.task_queue.append(teardown_task)
-                self.task_queue.sort(key=self._task_queue_sort_key)
-
     def update_node_state(self, new_node_data: SatelliteNodeState):
         """节点状态更新入口，写入时自动更新 Timestamp 为当前帧 Unix ms"""
         with self.state_rw_lock.write_lock():
@@ -1076,6 +828,10 @@ class SimulationEngine:
                         "energy_ratio": sdata.energy_ratio,
                         "congestion": sdata.congestion,
                         "heat_flow": sdata.heat_flow,
+                        "ambient_temperature": sdata.ambient_temperature,
+                        "terminal_temperature_list": sdata.terminal_temperature_list,
+                        "node_load_ratio": sdata.node_load_ratio,
+                        "load_fluctuation": sdata.load_fluctuation,
                         "ground_station_number": sdata.ground_station_number
                     }
                     node_list.append(node_dict)
@@ -1117,81 +873,6 @@ class SimulationEngine:
         trimmed_nodes = nodes[:head_count] + ["..."] + nodes[-tail_count:]
         return " -> ".join(f"#{node}" if node != "..." else "..." for node in trimmed_nodes)
 
-    @staticmethod
-    def _path_as_id_list(path):
-        result = []
-        for node in path or []:
-            try:
-                result.append(int(node))
-            except (TypeError, ValueError):
-                result.append(node)
-        return result
-
-    def _path_total_delay_ms(self, path):
-        if not path or len(path) < 2:
-            return 0.0
-
-        total_delay = 0.0
-        with self.state_rw_lock.read_lock():
-            local_topology = self.topology_state.new_topology if self.topology_state is not None else {}
-            for src, dst in zip(path[:-1], path[1:]):
-                link_attr = local_topology.get(str(src), {}).get(str(dst))
-                if link_attr is None:
-                    link_attr = local_topology.get(str(dst), {}).get(str(src))
-                if link_attr is None:
-                    continue
-                total_delay += float(link_attr.link_propagation_delay)
-                total_delay += float(link_attr.queue_delay)
-                total_delay += float(link_attr.transmission_delay)
-
-        return total_delay
-
-    def _link_attribute_summary(self, link_attr):
-        if link_attr is None:
-            return None
-        return {
-            "LinkDistance": self._printable_metric(link_attr.link_distance, 3),
-            "LinkCapacity": self._printable_metric(link_attr.link_capacity, 6),
-            "LeftCapacity": self._printable_metric(link_attr.left_capacity, 6),
-            "CurrentFlow": self._printable_metric(link_attr.current_flow, 6),
-            "LinkPropagationDelay": self._printable_metric(link_attr.link_propagation_delay, 6),
-            "QueueDelay": self._printable_metric(link_attr.queue_delay, 6),
-            "TransmissionDelay": self._printable_metric(link_attr.transmission_delay, 6),
-            "PacketLossRate": self._printable_metric(link_attr.packet_loss_rate, 8),
-            "HeatValue": self._printable_metric(link_attr.heat_value, 6),
-        }
-
-    def _collect_path_attributes(self, path, max_edges=12):
-        if not path or len(path) < 2:
-            return []
-
-        attributes = []
-        omitted_edges = 0
-        with self.state_rw_lock.read_lock():
-            local_topology = self.topology_state.new_topology if self.topology_state is not None else {}
-            edge_count = len(path) - 1
-            for idx, (src_id, dst_id) in enumerate(zip(path[:-1], path[1:])):
-                if idx >= max_edges:
-                    omitted_edges = edge_count - max_edges
-                    break
-
-                src_key, dst_key = str(src_id), str(dst_id)
-                link_attr = local_topology.get(src_key, {}).get(dst_key)
-                if link_attr is None:
-                    link_attr = local_topology.get(dst_key, {}).get(src_key)
-
-                edge_item = {"Edge": f"{src_key}->{dst_key}"}
-                link_summary = self._link_attribute_summary(link_attr)
-                if link_summary is None:
-                    edge_item["Missing"] = True
-                else:
-                    edge_item.update(link_summary)
-                attributes.append(edge_item)
-
-        if omitted_edges > 0:
-            attributes.append({"OmittedEdges": omitted_edges})
-        return attributes
-
     def _print_topology_reconstruction_result(self, result_dict):
         if not isinstance(result_dict, dict):
             return
@@ -1207,41 +888,6 @@ class SimulationEngine:
         logger.debug(pformat(top_qualities, width=120, compact=True))
 
 
-
-    def _print_task_planning_result(self, task, result):
-        logger.debug(f"[{self.current_time}s] [TaskPlanning] result=")
-        logger.debug("  " + pformat(result, width=120, compact=True).replace("\n", "\n  "))
-  
-
-    def _print_route_planning_results(self, tasks, results):
-        if not results:
-            logger.info(f"[{self.current_time}s] [RoutePlanning] 路由优化完成 | tasks={len(tasks or [])} | results=0")
-            return
-
-        arrived_count = sum(1 for item in results if item.get("RoutePath"))
-        logger.info(
-            f"[{self.current_time}s] [RoutePlanning] 路由优化完成 | tasks={len(tasks or [])} | "
-            f"results={len(results)} | arrived={arrived_count}"
-        )
-
-        for result in results:
-            route_path = result.get("RoutePath", [])
-            summary = {
-                "TaskId": str(result.get("TaskId")),
-                "RoutePath": self._path_as_id_list(route_path),
-                "TotalHopCount": result.get("TotalHopCount"),
-                "PathTotalCost": self._printable_metric(result.get("PathTotalCost"), 6),
-                "EndToEndDelay": self._printable_metric(result.get("EndToEndDelay"), 6),
-                "QueueDelay": self._printable_metric(result.get("QueueDelay"), 6),
-                "TransmissionDelay": self._printable_metric(result.get("TransmissionDelay"), 6),
-                "PacketLossRate": self._printable_metric(result.get("PacketLossRate"), 8),
-                "ISLValidRate": self._printable_metric(result.get("ISLValidRate"), 6),
-                "StartTime": result.get("StartTime"),
-                "EndTime": result.get("EndTime"),
-                "InferenceTimeSeconds": self._printable_metric(result.get("InferenceTimeSeconds"), 6),
-            }
-            logger.debug("  RouteResult=")
-            logger.debug("  " + pformat(summary, width=120, compact=True).replace("\n", "\n  "))
 
     def _print_snapshot(self, label="微周期", prev_time=None):
         """
@@ -1380,6 +1026,79 @@ class SimulationEngine:
         except Exception as e:
             logger.error(f"[{self.current_time}s] KPI 大屏看板推送任务触发异常: {e}")
 
+    def sensing_update(self):
+        """感知监测：读取当前仿真状态，输出表2-1 参数与表3-2 覆盖/采样/方法状态。"""
+        topology_state, node_state = self.get_current_states()
+        status = run_sensing_cycle(self.sensing_monitor, topology_state, node_state, self.current_time)
+        self.latest_sensing_status = status
+        self.notify_backend("sensing_status", status)
+        return status
+
+    def link_state_records_update(self, predicted_links):
+        """把 SCFE 预测适配为表2-2 单链路记录（物理量取自仿真链路状态）。"""
+        topology_state, _ = self.get_current_states()
+        records = adapt_scfe_output(predicted_links, link_states_from_topology(topology_state))
+        self.latest_link_state_records = records
+        return records
+
+    def capacity_evaluation_update(self, baseline_topology_state, predicted_links, window_start_s):
+        """容量分析与效能评估（表2-19/2-20）：重构前后拓扑对比 + 逐秒链路可用率。
+
+        业务矩阵：用户业务需求接入前，取拓扑重构所用的核心节点源-目的对，每对 1 Gbps；
+        λ* 按链路实际可实现速率（仿真 LinkCapacity）搜索。
+        """
+        topology_state, node_state = self.get_current_states()
+        recon_config = TopReconstructionConfig()
+        intensity = compute_business_demand_intensity(
+            predicted_links=predicted_links,
+            initial_topology=normalize_topology(baseline_topology_state),
+            horizon_steps=recon_config.business_intensity_horizon_steps,
+            decay_lambda=recon_config.business_intensity_decay_lambda,
+            max_link_capacity_gbps=config.MAX_LINK_SPEED_GBPS,
+        )
+        pairs = build_business_demand_source_destination_pairs(
+            node_state=node_state,
+            satellite_business_intensity=intensity.satellite_intensity,
+            core_node_count=recon_config.core_node_count(self.constellation_id),
+        )
+        traffic_matrix = [{"src": str(a), "dst": str(b), "demand_gbps": 1.0} for a, b in pairs]
+        topology = topology_state.new_topology
+        baseline = baseline_topology_state.new_topology
+        # baseline = init_walker_topology(self.constellation)
+        update_topology_snapshot(self.constellation, self._current_utc(), topology=baseline)
+        result = evaluate_capacity(
+            topology=topology,
+            traffic_matrix=traffic_matrix,
+            capacity_protocol={"LinkCapacity": config.MAX_LINK_SPEED_GBPS, "SearchPrecision": 0.01},
+            availability_samples=self.sensing_monitor.availability_samples(since_s=window_start_s),
+            planned_links=[f"{src}->{dst}" for src, links in topology.items() for dst in links],
+            baseline_topology=None if baseline is topology else baseline,
+            # baseline_topology= baseline,
+            evaluation_window={"StartTime": window_start_s, "EndTime": self.current_time},
+            frame_seconds=1.0,
+            timestamp_ms=self._timestamp_ms(self._current_utc()),
+        )
+
+        # 始终发布 v2 通道，供新前端按需渐进接入（默认前端仍消费 legacy 通道）。
+        self.notify_backend("capacity_evaluation_v2", result)
+        # 无论是否触发 legacy 前端推送，都更新 latest 缓存，
+        # 以保证 /api/simulation/capacity/latest 可返回最近一次容量评估结果。
+        self.latest_capacity_evaluation = result
+
+        gain_pct_raw = ((result.get("Capacity") or {}).get("CapacityGainPct"))
+        try:
+            gain_pct = float(gain_pct_raw) if gain_pct_raw is not None else None
+        except (TypeError, ValueError):
+            gain_pct = None
+
+        if gain_pct is not None and gain_pct <= 20.0:
+            logger.info(
+                f"[{self.current_time}s] [CapacityEvaluation] low gain but still emit frontend event: "
+                f"GainPct={gain_pct_raw}"
+            )
+        self.notify_backend("capacity_evaluation", result)
+        return result
+
     def background_traffic_update(self):
         """
         step1: 获取当前状态
@@ -1465,8 +1184,8 @@ class SimulationEngine:
 
         frame_rows = []
         link_index = []
-
         actual_availability_by_link = {}
+        actual_flow_by_link = {}
 
         for src_id in sorted(new_topo.keys(), key=self._sat_id_sort_key):
             src_sat = sat_list.get(str(src_id))
@@ -1498,12 +1217,12 @@ class SimulationEngine:
                 )
                 flow_feature = min(current_flow / max_link_speed, 1.0)
 
-                left_capacity = self._coerce_float(
-                    getattr(link_attr, "left_capacity", 0.0),
-                    default=0.0,
-                    min_value=0.0,
-                )
-                actual_availability = self._clamp01((1.0 + left_capacity) / 2.0)
+                # 与 LinkPredictor 的 LinkAvailability 同一口径：
+                # 0.5·剩余容量比例(相对额定容量) + 0.5·链路生存度(物理速率/额定速率)
+                rated = max(float(getattr(link_attr, "max_capacity", max_link_speed)), 1e-9)
+                capacity_norm = self._clamp01((rated - current_flow) / rated)
+                survival = self._clamp01(float(getattr(link_attr, "achievable_rate", 0.0)) / rated)
+                actual_availability = self._clamp01(0.5 * capacity_norm + 0.5 * survival)
 
 
                 frame_rows.append([
@@ -1521,6 +1240,7 @@ class SimulationEngine:
                 ])
                 link_index.append((str(src_id), str(dst_id)))
                 actual_availability_by_link[(str(src_id), str(dst_id))] = actual_availability
+                actual_flow_by_link[(str(src_id), str(dst_id))] = current_flow
 
 
         features = (
@@ -1532,6 +1252,7 @@ class SimulationEngine:
         self._evaluate_prediction_availability_frame(
             current_utc,
             actual_availability_by_link,
+            actual_flow_by_link,
         )
 
         return {
@@ -1552,6 +1273,69 @@ class SimulationEngine:
         else:
             dt = self._to_utc_datetime(value)
         return int(round(dt.timestamp() * 1000))
+
+    def _flow_precision_tolerance_gbps(self):
+        predictor = getattr(self, "link_predictor", None)
+        table = getattr(predictor, "FLOW_TOLERANCE_GBPS", None)
+        if isinstance(table, dict):
+            raw = table.get(str(self.constellation_id))
+            try:
+                val = float(raw)
+                if math.isfinite(val) and val >= 0.0:
+                    return val
+            except (TypeError, ValueError):
+                pass
+        return 0.0
+
+    def _extract_predicted_flow_by_timestamp(self, predicted_links):
+        if not isinstance(predicted_links, dict):
+            return {}, {}
+
+        debug = predicted_links.get("_debug_info") or {}
+        forecasts = debug.get("flow_forecasts_gbps") or {}
+        link_index = forecasts.get("link_index") or []
+        baseline = forecasts.get("baseline")
+        scfe = forecasts.get("scfe")
+        timestamps = predicted_links.get("Timestamp") or []
+
+        try:
+            baseline_arr = np.asarray(baseline, dtype=np.float64)
+            scfe_arr = np.asarray(scfe, dtype=np.float64)
+        except Exception:
+            return {}, {}
+
+        if baseline_arr.ndim != 2 or scfe_arr.ndim != 2:
+            return {}, {}
+        if baseline_arr.shape != scfe_arr.shape:
+            return {}, {}
+        if baseline_arr.shape[0] != len(link_index):
+            return {}, {}
+        if baseline_arr.shape[1] != len(timestamps):
+            return {}, {}
+
+        baseline_by_ts = {}
+        scfe_by_ts = {}
+        for step, ts in enumerate(timestamps):
+            ts_key = self._prediction_timestamp_key(ts)
+            baseline_map = {}
+            scfe_map = {}
+            for row, link in enumerate(link_index):
+                try:
+                    src_id, dst_id = link
+                except (TypeError, ValueError):
+                    continue
+                key = (str(src_id), str(dst_id))
+                b = baseline_arr[row, step]
+                s = scfe_arr[row, step]
+                if math.isfinite(float(b)):
+                    baseline_map[key] = float(b)
+                if math.isfinite(float(s)):
+                    scfe_map[key] = float(s)
+            if baseline_map:
+                baseline_by_ts[ts_key] = baseline_map
+            if scfe_map:
+                scfe_by_ts[ts_key] = scfe_map
+        return baseline_by_ts, scfe_by_ts
 
     def _extract_predicted_availability_by_timestamp(self, predicted_links):
         if not isinstance(predicted_links, dict):
@@ -1615,33 +1399,43 @@ class SimulationEngine:
             return
 
         predicted_by_timestamp = self._extract_predicted_availability_by_timestamp(predicted_links)
-        expected_timestamps = set(predicted_by_timestamp.keys())
+        baseline_flow_by_ts, scfe_flow_by_ts = self._extract_predicted_flow_by_timestamp(predicted_links)
+        expected_timestamps = set(predicted_by_timestamp.keys()) | set(baseline_flow_by_ts.keys()) | set(scfe_flow_by_ts.keys())
         if not expected_timestamps:
             logger.info(
                 f"[{self.current_time}s] [LinkPredictionAccuracy] No predicted "
-                "LinkAvailability samples to evaluate."
+                "samples to evaluate."
             )
             return
 
         threshold = self._link_availability_threshold()
+        tolerance = self._flow_precision_tolerance_gbps()
         self._active_prediction_accuracy = {
             "trigger_time": self.current_time,
             "window_start": self.current_time,
             "window_end": self.current_time + int(getattr(config, "MACRO_PERIOD_SECONDS", 30)),
             "threshold": threshold,
+            "tolerance_gbps": tolerance,
             "predicted_by_timestamp": predicted_by_timestamp,
+            "baseline_flow_by_ts": baseline_flow_by_ts,
+            "scfe_flow_by_ts": scfe_flow_by_ts,
             "expected_timestamps": expected_timestamps,
             "evaluated_timestamps": set(),
             "frame_results": [],
             "correct": 0,
             "total": 0,
+            "baseline_correct": 0,
+            "baseline_total": 0,
+            "scfe_correct": 0,
+            "scfe_total": 0,
         }
         logger.info(
             f"[{self.current_time}s] [LinkPredictionAccuracy] Start evaluating "
-            f"{len(expected_timestamps)} predicted frames with threshold={threshold:.3f}."
+            f"{len(expected_timestamps)} predicted frames with "
+            f"threshold={threshold:.3f}, tolerance={tolerance:.3f}Gbps."
         )
 
-    def _evaluate_prediction_availability_frame(self, timestamp, actual_availability_by_link):
+    def _evaluate_prediction_availability_frame(self, timestamp, actual_availability_by_link, actual_flow_by_link=None):
         active = self._active_prediction_accuracy
         if not active:
             return
@@ -1665,11 +1459,44 @@ class SimulationEngine:
 
         active["correct"] += correct
         active["total"] += total
+
+        baseline_map = active["baseline_flow_by_ts"].get(timestamp_key) or {}
+        scfe_map = active["scfe_flow_by_ts"].get(timestamp_key) or {}
+        tolerance = float(active.get("tolerance_gbps", 0.0))
+        baseline_correct = 0
+        baseline_total = 0
+        scfe_correct = 0
+        scfe_total = 0
+        actual_flow_by_link = actual_flow_by_link or {}
+
+        for link_key, predicted_flow in baseline_map.items():
+            actual_flow = actual_flow_by_link.get(link_key)
+            if actual_flow is None:
+                continue
+            baseline_total += 1
+            baseline_correct += int(abs(predicted_flow - actual_flow) <= tolerance)
+
+        for link_key, predicted_flow in scfe_map.items():
+            actual_flow = actual_flow_by_link.get(link_key)
+            if actual_flow is None:
+                continue
+            scfe_total += 1
+            scfe_correct += int(abs(predicted_flow - actual_flow) <= tolerance)
+
+        active["baseline_correct"] += baseline_correct
+        active["baseline_total"] += baseline_total
+        active["scfe_correct"] += scfe_correct
+        active["scfe_total"] += scfe_total
+
         active["evaluated_timestamps"].add(timestamp_key)
         active["frame_results"].append({
             "Timestamp": timestamp.isoformat(),
             "Correct": correct,
             "Total": total,
+            "BaselineCorrect": baseline_correct,
+            "BaselineTotal": baseline_total,
+            "SCFECorrect": scfe_correct,
+            "SCFETotal": scfe_total,
         })
 
         if active["expected_timestamps"].issubset(active["evaluated_timestamps"]):
@@ -1687,12 +1514,24 @@ class SimulationEngine:
 
         total = active["total"]
         accuracy = (active["correct"] / total) if total > 0 else None
+        baseline_total = active["baseline_total"]
+        scfe_total = active["scfe_total"]
+        baseline_precision = (active["baseline_correct"] / baseline_total) if baseline_total > 0 else None
+        scfe_precision = (active["scfe_correct"] / scfe_total) if scfe_total > 0 else None
         self._pending_prediction_accuracy = {
             "TriggerTime": active["trigger_time"],
             "WindowStart": active["window_start"],
             "WindowEnd": active["window_end"],
             "Threshold": active["threshold"],
-            "Accuracy": accuracy,
+            "ToleranceGbps": active.get("tolerance_gbps", 0.0),
+            "Accuracy": scfe_precision if scfe_precision is not None else accuracy,
+            "AvailabilityAccuracy": accuracy,
+            "BaselinePrecision": baseline_precision,
+            "SCFEPrecision": scfe_precision,
+            "BaselineCorrect": active["baseline_correct"],
+            "BaselineTotal": baseline_total,
+            "SCFECorrect": active["scfe_correct"],
+            "SCFETotal": scfe_total,
             "Correct": active["correct"],
             "Total": total,
             "EvaluatedFrames": len(active["evaluated_timestamps"]),
@@ -1707,12 +1546,18 @@ class SimulationEngine:
             return
 
         accuracy = summary.get("Accuracy")
+        baseline_precision = summary.get("BaselinePrecision")
+        scfe_precision = summary.get("SCFEPrecision")
         accuracy_text = "N/A" if accuracy is None else f"{accuracy * 100:.2f}%"
+        baseline_text = "N/A" if baseline_precision is None else f"{baseline_precision * 100:.2f}%"
+        scfe_text = "N/A" if scfe_precision is None else f"{scfe_precision * 100:.2f}%"
         logger.info(
             f"[{self.current_time}s] [LinkPredictionAccuracy] Previous macro "
             f"T={summary['TriggerTime']}s, window=[{summary['WindowStart']}s,"
             f"{summary['WindowEnd']}s), threshold={summary['Threshold']:.3f}, "
-            f"accuracy={accuracy_text}, correct={summary['Correct']}/{summary['Total']}, "
+            f"tolerance={summary.get('ToleranceGbps', 0.0):.3f}Gbps, "
+            f"accuracy={accuracy_text}, baseline={baseline_text}, scfe={scfe_text}, "
+            f"correct={summary['Correct']}/{summary['Total']}, "
             f"frames={summary['EvaluatedFrames']}/{summary['ExpectedFrames']}"
         )
         self.notify_backend("link_prediction_accuracy", summary)
@@ -1797,11 +1642,33 @@ class SimulationEngine:
         if input_window is None or link_index is None:
             input_window, link_index = self._prediction_window_to_model_input()
         current_utc = self._current_utc()
+        current_flow_rows = []
+        with self.state_rw_lock.read_lock():
+            topo = self.topology_state
+            topology_map = (topo.new_topology or {}) if topo else {}
+            for src_id, dst_id in link_index:
+                src_key = str(src_id)
+                dst_key = str(dst_id)
+                link_attr = (topology_map.get(src_key) or {}).get(dst_key)
+                if link_attr is None:
+                    continue
+                flow_value = getattr(link_attr, "current_flow", None)
+                if flow_value is None:
+                    continue
+                try:
+                    flow_value = float(flow_value)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(flow_value):
+                    continue
+                current_flow_rows.append((current_utc, src_key, dst_key, max(0.0, flow_value)))
+
         return self.link_predictor.predict(
             current_utc,
             input_window,
             link_index,
             step_seconds=config.MICRO_PERIOD_SECONDS,
+            current_flow_rows=current_flow_rows,
         )
 
     def topology_reconstruction_execution(self, predicted_links=None):
@@ -1825,7 +1692,8 @@ class SimulationEngine:
             node_state=current_node,
             constellation=self.constellation,
             predicted_links=predicted_links,
-            previous_topology_update=previous_topology_update,           
+            previous_topology_update=previous_topology_update,
+            task_list=self.task_list,
         )
         self._last_topology_reconstruction_result = result_dict
         
@@ -1859,177 +1727,6 @@ class SimulationEngine:
         return new_topology_state
 
 
-    def path_planning_execution(self, topology_state=None, node_state=None, task_planning_params=None):
-        """
-        执行路径规划任务
-        
-        输入：
-            - topology_state: 当前拓扑状态字典
-            - node_state: 当前节点状态字典
-            - task_planning_params: 单个任务字典 或 任务列表
-            
-        输出：
-            - 如果输入是单个任务：返回规划结果字典
-            - 如果输入是任务列表：返回规划结果列表
-        """
-        if task_planning_params is None:
-            return []
-        
-        # 判断是单个任务还是任务列表
-        is_single_task = isinstance(task_planning_params, dict) and "TaskId" in task_planning_params
-        
-        if is_single_task:
-            # 处理单个任务
-            try:
-                result = run_task_planning(
-                    topology_state=topology_state,
-                    node_state=node_state,
-                    task_planning_params=task_planning_params,
-                    constellation=self.constellation_id
-                )
-                
-                # 如果规划成功，更新拓扑链路流量状态
-                if result.get("capacity_status") == "OK":
-                    allocations = result.get("allocations", [])
-                    for allocation in allocations:
-                        path = allocation.get("path", [])
-                        ratio = allocation.get("ratio", 0.0)
-                        demand_gbps = result.get("demand_gbps", 0.0)
-                        duration = task_planning_params.get("Duration", 0)
-                        
-                        # 计算实际分配的流量
-                        flow_size = demand_gbps * ratio
-                        
-                        if path and flow_size > 0:
-                            # 更新拓扑和节点状态
-                            self.update_topology_link_flow_state(
-                                route_path=path,
-                                timestamp=None,
-                                flow_size=flow_size,
-                                duration=duration
-                            )
-
-                self._print_task_planning_result(task_planning_params, result)
-                # ==========================================
-                # [新增]：每次完成单个任务的规划后，向前端推送并异步落库
-                # ==========================================
-                if result:
-                    self.notify_backend("task_planning_result", result)
-                    try:
-                        from simulation_api.db_services import save_task_planning_results
-                        save_task_planning_results.delay(result)
-                    except Exception as e:
-                        logger.error(f"[{self.current_time}s] 任务规划结果异步落库异常: {e}")
-                return result
-                
-            except Exception as e:
-                logger.error(f"[path_planning_execution] 任务 {task_planning_params.get('TaskId', 'unknown')} 执行异常: {e}")
-                try:
-                    demand_gbps = float(task_planning_params.get("DemandGbps", 0.0) or 0.0)
-                except (TypeError, ValueError):
-                    demand_gbps = 0.0
-                result = {
-                    "task_id": task_planning_params.get("TaskId", "unknown"),
-                    "constellation": str(self.constellation_id),
-                    "src": None if task_planning_params.get("SourceGroundStationId") is None else str(task_planning_params.get("SourceGroundStationId")),
-                    "dst": None if task_planning_params.get("TargetGroundStationId") is None else str(task_planning_params.get("TargetGroundStationId")),
-                    "demand_gbps": demand_gbps,
-                    "reason": f"execution error: {str(e)}",
-                    "avg_delay_ms": None,
-                    "capacity_max_util_after": None,
-                    "capacity_status": "FAILED",
-                    "capacity_total_overflow": None,
-                    "decision_total_ms": 0.0,
-                    "jitter_ms": None,
-                    "max_link_utilization_after": None,
-                    "overflow_amount": None,
-                    "allocations": [],
-                }
-                self._print_task_planning_result(task_planning_params, result)
-                
-            # ==========================================
-            # [新增]：每次完成单个任务的规划后，向前端推送并异步落库
-            # ==========================================
-            if result:
-                self.notify_backend("task_planning_result", result)
-                try:
-                    from simulation_api.db_services import save_task_planning_results
-                    save_task_planning_results.delay(result)
-                except Exception as e:
-                    logger.error(f"[{self.current_time}s] 任务规划结果异步落库异常: {e}")
-                    
-            return result
-        else:
-            # 处理任务列表
-            results = []
-            if isinstance(task_planning_params, list):
-                for task in task_planning_params:
-                    result = self.path_planning_execution(
-                        topology_state=topology_state,
-                        node_state=node_state,
-                        task_planning_params=task
-                    )
-                    results.append(result)
-            
-            return results
-
-    def route_planning_execution(self, topology_state=None, node_state=None, task_planning_demands=None):
-        """
-        路由优化的执行
-        上游输入：routing_demand_generation() 的输出或外部传入的任务需求
-        """
-        # 1. 获取当前状态
-        if topology_state is None or node_state is None:
-            topology_state, node_state = self.get_current_states()
-        
-        current_utc = self._current_utc()
-        
-        # 2. 确定路由任务列表（优先使用传入参数，否则自动生成）
-        if task_planning_demands and isinstance(task_planning_demands, dict):
-            tasks = task_planning_demands.get("RouteTaskList", [])
-        else:
-            routing_demand = routing_demand_generation(topology_state, node_state, current_utc)
-            tasks = routing_demand.get("RouteTaskList", [])
-        
-        if not tasks:
-            return []
-
-
-        # 调用批量路由规划接口
-        results = route_planning_batch_execution(
-            topology_state=topology_state,
-            node_state=node_state,
-            Timestamp=current_utc.isoformat(),
-            ConstellationId=topology_state.constellation_id,
-            RouteTaskList=tasks
-        )
-
-        # 3. 根据结果更新拓扑链路流量状态
-        for res in results:
-            route_path = res.get("RoutePath")
-            if not route_path:
-                continue
-                
-            # 找到对应的任务以获取流量大小和持续时间
-            task = next((t for t in tasks if t.get("TaskId") == res.get("TaskId")), None)
-            if task:
-                packet_size_mbits = task.get("PacketSize", 0.0)
-                duration = task.get("Duration", 10)
-                # Mbits -> Gbps (假设在 duration 内均匀传输)
-                flow_size_gbps = packet_size_mbits / duration / 1000.0 if duration > 0 else 0.0
-                
-                if flow_size_gbps > 0:
-                    self.update_topology_link_flow_state(
-                        route_path=route_path,
-                        timestamp=current_utc,
-                        flow_size=flow_size_gbps,
-                        duration=duration,
-                        route_result=res
-                    )
-        if self.current_time % config.MICRO_PERIOD_SECONDS == 0:
-            self._print_route_planning_results(tasks, results)
-        return results
-    
     def _macro_loop(self):
         """宏周期线程：链路预测 -> 地面站数量更新 -> 拓扑重构"""
         while not self._stop_event.is_set():
@@ -2073,7 +1770,15 @@ class SimulationEngine:
                             f"[{self.current_time}s] [Macro] 链路预测完成，horizon={horizon}，"
                             f"耗时 {t_cost:.2f} ms"
                         )
+                        self.latest_prediction_result = predicted_links
                         self.notify_backend("link_prediction_result", predicted_links)
+
+                        t_start = time.time()
+                        records = self.link_state_records_update(predicted_links)
+                        logger.info(
+                            f"[{self.current_time}s] [Macro] 表2-2 链路状态记录 {len(records)} 条，"
+                            f"耗时 {(time.time() - t_start) * 1000:.2f} ms"
+                        )
                 else:
 
                     logger.info(
@@ -2092,10 +1797,29 @@ class SimulationEngine:
                 if predicted_links is None:
                     continue
 
+                baseline_topology_state, _ = self.get_current_states()
                 t_start_topo = time.time()
                 new_topo_data = self.topology_reconstruction_execution(predicted_links)
                 self._last_topo_time = (time.time() - t_start_topo) * 1000
-                self.update_topology_state(new_topo_data)
+                topology_update = int(
+                    (self._last_topology_reconstruction_result or {}).get("TopologyUpdate", 0) or 0)
+                self.update_topology_state(new_topo_data if topology_update else baseline_topology_state)
+
+                t_start = time.time()
+                capacity = self.capacity_evaluation_update(
+                    baseline_topology_state,
+                    predicted_links,
+                    window_start_s=self.current_time - int(getattr(config, "MACRO_PERIOD_SECONDS", 30)),
+                )
+                logger.info(
+                    f"[{self.current_time}s] [CapacityEvaluation] "
+                    f"CapacityBefore={capacity['Capacity']['CapacityBefore']} "
+                    f"CapacityAfter={capacity['Capacity']['CapacityAfter']} "
+                    f"GainPct={capacity['Capacity']['CapacityGainPct']} "
+                    f"Availability={capacity['Availability']['Availability']} "
+                    f"Passed={capacity['Verdict']['Passed']}/{capacity['Verdict']['Total']} "
+                    f"耗时 {(time.time() - t_start) * 1000:.2f} ms"
+                )
                 
                 # ==========================================
                 # [新增]：推送拓扑重构结果至前端，并调用 Celery 异步落库
@@ -2153,11 +1877,6 @@ class SimulationEngine:
                     )
 
 
-                # # 3. 任务规划
-                # curr_topo, curr_node = self.get_current_states()
-                # task_result = self.path_planning_execution(curr_topo, curr_node, self.task_queue)
-                # self.notify_backend("task_planning_result", task_result)
-
             except Exception as e:
                 logger.error(f"[_macro_loop] 宏周期执行期间发生异常: {e}")
             finally:
@@ -2166,7 +1885,8 @@ class SimulationEngine:
 
     def _micro_loop(self):
         """
-        微周期线程：每个微周期执行一次，处理任务、更新流量、执行路由。
+        微周期线程：每个微周期执行一次，更新位置与背景流量并刷新预测窗口。
+        已按需求移除微周期内的路径规划、路由需求生成与路由优化计算。
         输出时机由调用方（run_simulation / run_extended_simulation）控制，
         本线程只负责计算，不负责打印。
         """
@@ -2182,10 +1902,7 @@ class SimulationEngine:
                 # 0. 每帧先更新卫星位置（同时把链路距离同步回 topology_state）
                 self._update_satellite_positions()
 
-                # 1. 处理到达时间的规划任务
-                self._process_pending_tasks()
-
-                # 2. 背景流量生成（最新坐标）
+                # 1. 背景流量生成（最新坐标）
                 bg_flow_data, ret_timestamp = self.background_traffic_update()
                 self.notify_backend("background_traffic_result", bg_flow_data)
 
@@ -2193,51 +1910,13 @@ class SimulationEngine:
                 current_frame = self._build_prediction_frame()
                 self._prediction_buffer.append(current_frame)
 
-                # =============================================================
+                # 2. 感知监测
+                self.sensing_update()
 
-                # 3. 路由需求生成（基于最新拓扑和背景流量结果）
-                #    必须在 background_traffic_update 之后调用，
-                #    确保 topology_state["newTopology"] 里的 CurrentFlow 已经写回
-                current_utc = self._current_utc()
-                topo, node = self.get_current_states()
-                routing_demand = routing_demand_generation(topo, node, current_utc)
-                
-                # 新增：路由需求落库
-                try:
-                    from simulation_api.db_services import save_routing_demands
-                    save_routing_demands.delay(routing_demand)
-                except Exception as e:
-                    logger.error(f"[{self.current_time}s] 路由需求异步落库异常: {e}")
-
-                # 微周期高频日志节流，默认每30s打印一次摘要，详细信息下沉到 DEBUG。
-                task_count = len(routing_demand.get("RouteTaskList", []))
-                ts = routing_demand.get("Timestamp", 0)
                 if self._should_log_micro_summary():
                     logger.info(
-                        f"[{self.current_time}s] 路由需求生成完成 | 生成任务数={task_count} | Timestamp={ts}"
+                        f"[{self.current_time}s] 微周期计算完成 | 路径规划/路由需求/路由优化已禁用"
                     )
-                else:
-                    logger.debug(
-                        f"[{self.current_time}s] 路由需求生成完成(节流) | 生成任务数={task_count}"
-                    )
-
-                # 4. 路由优化执行
-                routing_results = self.route_planning_execution(task_planning_demands=routing_demand)
-                
-                # 新增：路由优化结果推送前端和落库
-                if routing_results:
-                    # 将路由需求和路由结果组装合并，统一发送给前端
-                    combined_routing_data = {
-                        "demand": routing_demand,
-                        "results": routing_results
-                    }
-                    self.notify_backend("routing_optimization_result", combined_routing_data)
-                    
-                    try:
-                        from simulation_api.db_services import save_routing_results
-                        save_routing_results.delay(routing_results)
-                    except Exception as e:
-                        logger.error(f"[{self.current_time}s] 路由优化结果异步落库异常: {e}")
 
             except Exception as e:
                 logger.error(f"[_micro_loop] 微周期执行期间发生异常: {e}")
@@ -2251,8 +1930,6 @@ class SimulationEngine:
         self._stop_event.set()
         self._macro_event.set()
         self._micro_event.set()
-        if hasattr(self, 'task_executor') and self.task_executor:
-            self.task_executor.shutdown(wait=False)
 
     def run_simulation(self, timestamp, constellation_id, tle_file_path, task_list):
         logger.info("====== 仿真开始: 初始化阶段 ======")
@@ -2268,6 +1945,7 @@ class SimulationEngine:
         # 初始化完成后，先强行抓取 T=0 的状态推入窗口！
         initial_frame = self._build_prediction_frame()
         self._prediction_buffer.append(initial_frame)
+        self.sensing_update()
         logger.info(
             f"[0s] [Warmup] 装入 T=0 初始特征帧 "
             f"{len(self._prediction_buffer)}/{prediction_input_steps}"
@@ -2301,6 +1979,7 @@ class SimulationEngine:
             # ================= [新增：填入数据，不触发预测] =================
             current_frame = self._build_prediction_frame()
             self._prediction_buffer.append(current_frame)
+            self.sensing_update()
             # 加一句打印，让你在控制台清楚看到预热帧正在平稳装载数据
             # 加上 T=0 时装入的那一帧，这里打印的进度会从 2/30 一直走到 30/30
             logger.debug(
@@ -2348,7 +2027,7 @@ class SimulationEngine:
                     self._macro_event.set()
                     self._macro_done.wait()
 
-                # 微周期：背景流量 + 路由规划
+                # 微周期：位置更新 + 背景流量 + 预测窗口刷新（不做路径/路由计算）
                 self._micro_done.clear()
                 self._micro_event.set()
                 self._micro_done.wait()
@@ -2379,9 +2058,6 @@ class SimulationEngine:
                     self._macro_thread.join(timeout=2.0)
                 if self._micro_thread and self._micro_thread.is_alive():
                     self._micro_thread.join(timeout=2.0)
-                    
-                # 关闭异步任务规划的线程池
-                self.task_executor.shutdown(wait=False, cancel_futures=True)
                 logger.info("仿真系统退出。")
             else:
                 logger.info("\n====== 基础仿真已完成，底层驱动线程保持待命 ======")
@@ -2435,6 +2111,4 @@ class SimulationEngine:
                 self._macro_thread.join(timeout=2.0)
             if self._micro_thread and self._micro_thread.is_alive():
                 self._micro_thread.join(timeout=2.0)
-                
-            self.task_executor.shutdown(wait=False, cancel_futures=True)
             logger.info("系统完全退出。")

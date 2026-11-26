@@ -1,0 +1,655 @@
+{
+  "contract_id": "generative-multilayer-cvae-v1",
+  "schema_version": "2.0",
+  "target": "12 个跨层参数在 t 时刻的标准化取值",
+  "window": 8,
+  "params": [
+    {
+      "index": 0,
+      "name": "ambient_temperature_k",
+      "unit": "K",
+      "layer": "environment",
+      "critical": false,
+      "source_kind": "physics_simulated",
+      "description": "星体环境温度（日照/阴影交替引起的周期性变化）",
+      "transform": "identity",
+      "transform_floor": 0.0,
+      "mean": 302.85764921334226,
+      "std": 0.7003284961348987,
+      "valid_range": [
+        120.0,
+        400.0
+      ]
+    },
+    {
+      "index": 1,
+      "name": "vibration_rms_g",
+      "unit": "g",
+      "layer": "environment",
+      "critical": false,
+      "source_kind": "physics_simulated",
+      "description": "星体振动加速度均方根",
+      "transform": "identity",
+      "transform_floor": 0.0,
+      "mean": 0.11277807471716997,
+      "std": 0.062374090494036444,
+      "valid_range": [
+        1e-06,
+        2.0
+      ]
+    },
+    {
+      "index": 2,
+      "name": "pointing_error_urad",
+      "unit": "urad",
+      "layer": "environment",
+      "critical": true,
+      "source_kind": "physics_simulated",
+      "description": "PAT 指向误差（跟瞄残差）",
+      "transform": "identity",
+      "transform_floor": 0.0,
+      "mean": 7.823871945741373,
+      "std": 2.512078687890006,
+      "valid_range": [
+        0.001,
+        100.0
+      ]
+    },
+    {
+      "index": 3,
+      "name": "tx_power_dbm",
+      "unit": "dBm",
+      "layer": "physical",
+      "critical": true,
+      "source_kind": "physics_simulated",
+      "description": "发送光功率",
+      "transform": "identity",
+      "transform_floor": 0.0,
+      "mean": 22.76791207236473,
+      "std": 0.14459323386102504,
+      "valid_range": [
+        -10.0,
+        50.0
+      ]
+    },
+    {
+      "index": 4,
+      "name": "path_loss_db",
+      "unit": "dB",
+      "layer": "physical",
+      "critical": true,
+      "source_kind": "physics_simulated",
+      "description": "链路传输损耗（自由空间 + 指向 + 大气）",
+      "transform": "identity",
+      "transform_floor": 0.0,
+      "mean": 48.704091367267424,
+      "std": 3.981794720272944,
+      "valid_range": [
+        0.001,
+        400.0
+      ]
+    },
+    {
+      "index": 5,
+      "name": "rx_power_dbm",
+      "unit": "dBm",
+      "layer": "physical",
+      "critical": true,
+      "source_kind": "physics_simulated",
+      "description": "接收光功率",
+      "transform": "identity",
+      "transform_floor": 0.0,
+      "mean": -25.936179295521967,
+      "std": 3.9873516877429616,
+      "valid_range": [
+        -300.0,
+        50.0
+      ]
+    },
+    {
+      "index": 6,
+      "name": "snr_db",
+      "unit": "dB",
+      "layer": "physical",
+      "critical": true,
+      "source_kind": "physics_simulated",
+      "description": "接收信噪比",
+      "transform": "identity",
+      "transform_floor": 0.0,
+      "mean": 2.0638207055799604,
+      "std": 3.9873516782283014,
+      "valid_range": [
+        -60.0,
+        100.0
+      ]
+    },
+    {
+      "index": 7,
+      "name": "ber_pre_fec",
+      "unit": "ratio",
+      "layer": "physical",
+      "critical": true,
+      "source_kind": "physics_simulated",
+      "description": "纠错前误码率",
+      "transform": "log10",
+      "transform_floor": 1e-10,
+      "mean": -2.894995799933417,
+      "std": 1.9391363621123996,
+      "valid_range": [
+        1e-15,
+        0.5
+      ]
+    },
+    {
+      "index": 8,
+      "name": "achievable_rate_gbps",
+      "unit": "Gbps",
+      "layer": "physical",
+      "critical": true,
+      "source_kind": "derived",
+      "description": "由 SNR/BER 与调制编码推导的可实现速率",
+      "transform": "identity",
+      "transform_floor": 0.0,
+      "mean": 37.959215349260006,
+      "std": 19.621785493660177,
+      "valid_range": [
+        0.0,
+        1000.0
+      ]
+    },
+    {
+      "index": 9,
+      "name": "link_delay_ms",
+      "unit": "ms",
+      "layer": "network",
+      "critical": true,
+      "source_kind": "simulated_event",
+      "description": "链路时延（传播 + 排队 + 传输）",
+      "transform": "identity",
+      "transform_floor": 0.0,
+      "mean": 4.542011585139265,
+      "std": 1.170469196185768,
+      "valid_range": [
+        1e-06,
+        10000.0
+      ]
+    },
+    {
+      "index": 10,
+      "name": "packet_loss_rate",
+      "unit": "ratio",
+      "layer": "network",
+      "critical": true,
+      "source_kind": "simulated_event",
+      "description": "丢包率（按数据包事件统计）",
+      "transform": "log10",
+      "transform_floor": 1e-06,
+      "mean": -4.5479984323389395,
+      "std": 1.6729559675313055,
+      "valid_range": [
+        0.0,
+        0.999
+      ]
+    },
+    {
+      "index": 11,
+      "name": "delay_jitter_ms",
+      "unit": "ms",
+      "layer": "network",
+      "critical": true,
+      "source_kind": "simulated_event",
+      "description": "时延抖动（同流相邻包对 IPDV）",
+      "transform": "log10",
+      "transform_floor": 0.001,
+      "mean": -0.3138612727532043,
+      "std": 0.22431104213248368,
+      "valid_range": [
+        1e-06,
+        10000.0
+      ]
+    }
+  ],
+  "condition_layout": [
+    {
+      "name": "layer_index",
+      "unit": "enum",
+      "normalization": "原值（0=LEO 约 500 km，1=MEO 约 1150 km）",
+      "source": "conditions.layer_index",
+      "index": 0
+    },
+    {
+      "name": "altitude_km_norm",
+      "unit": "-",
+      "normalization": "altitude_km / 1000",
+      "source": "conditions.altitude_km",
+      "index": 1
+    },
+    {
+      "name": "latitude_norm",
+      "unit": "-",
+      "normalization": "latitude / 90",
+      "source": "conditions.latitude",
+      "index": 2
+    },
+    {
+      "name": "local_hour_sin",
+      "unit": "-",
+      "normalization": "sin(2*pi*local_hour/24)",
+      "source": "conditions.local_hour",
+      "index": 3
+    },
+    {
+      "name": "local_hour_cos",
+      "unit": "-",
+      "normalization": "cos(2*pi*local_hour/24)",
+      "source": "conditions.local_hour",
+      "index": 4
+    },
+    {
+      "name": "sunlit",
+      "unit": "bool",
+      "normalization": "0/1（0=阴影区，1=日照区）",
+      "source": "conditions.sunlit",
+      "index": 5
+    },
+    {
+      "name": "link_distance_norm",
+      "unit": "-",
+      "normalization": "(link_distance_km - 1500) / 1000；缺失填 0",
+      "source": "conditions.distance_km",
+      "index": 6
+    },
+    {
+      "name": "prev__ambient_temperature_k__z",
+      "unit": "K",
+      "normalization": "上一时刻标准化值（冷启动 t=0 填 0）",
+      "source": "params.ambient_temperature_k[t-1]",
+      "index": 7
+    },
+    {
+      "name": "prev__vibration_rms_g__z",
+      "unit": "g",
+      "normalization": "上一时刻标准化值（冷启动 t=0 填 0）",
+      "source": "params.vibration_rms_g[t-1]",
+      "index": 8
+    },
+    {
+      "name": "prev__pointing_error_urad__z",
+      "unit": "urad",
+      "normalization": "上一时刻标准化值（冷启动 t=0 填 0）",
+      "source": "params.pointing_error_urad[t-1]",
+      "index": 9
+    },
+    {
+      "name": "prev__tx_power_dbm__z",
+      "unit": "dBm",
+      "normalization": "上一时刻标准化值（冷启动 t=0 填 0）",
+      "source": "params.tx_power_dbm[t-1]",
+      "index": 10
+    },
+    {
+      "name": "prev__path_loss_db__z",
+      "unit": "dB",
+      "normalization": "上一时刻标准化值（冷启动 t=0 填 0）",
+      "source": "params.path_loss_db[t-1]",
+      "index": 11
+    },
+    {
+      "name": "prev__rx_power_dbm__z",
+      "unit": "dBm",
+      "normalization": "上一时刻标准化值（冷启动 t=0 填 0）",
+      "source": "params.rx_power_dbm[t-1]",
+      "index": 12
+    },
+    {
+      "name": "prev__snr_db__z",
+      "unit": "dB",
+      "normalization": "上一时刻标准化值（冷启动 t=0 填 0）",
+      "source": "params.snr_db[t-1]",
+      "index": 13
+    },
+    {
+      "name": "prev__ber_pre_fec__z",
+      "unit": "ratio",
+      "normalization": "上一时刻标准化值（冷启动 t=0 填 0）",
+      "source": "params.ber_pre_fec[t-1]",
+      "index": 14
+    },
+    {
+      "name": "prev__achievable_rate_gbps__z",
+      "unit": "Gbps",
+      "normalization": "上一时刻标准化值（冷启动 t=0 填 0）",
+      "source": "params.achievable_rate_gbps[t-1]",
+      "index": 15
+    },
+    {
+      "name": "prev__link_delay_ms__z",
+      "unit": "ms",
+      "normalization": "上一时刻标准化值（冷启动 t=0 填 0）",
+      "source": "params.link_delay_ms[t-1]",
+      "index": 16
+    },
+    {
+      "name": "prev__packet_loss_rate__z",
+      "unit": "ratio",
+      "normalization": "上一时刻标准化值（冷启动 t=0 填 0）",
+      "source": "params.packet_loss_rate[t-1]",
+      "index": 17
+    },
+    {
+      "name": "prev__delay_jitter_ms__z",
+      "unit": "ms",
+      "normalization": "上一时刻标准化值（冷启动 t=0 填 0）",
+      "source": "params.delay_jitter_ms[t-1]",
+      "index": 18
+    },
+    {
+      "name": "hist_mean__ambient_temperature_k__z",
+      "unit": "K",
+      "normalization": "[t-window+1, t-1] 区间标准化均值（无历史时填 0）",
+      "source": "params.ambient_temperature_k 历史窗口",
+      "index": 19
+    },
+    {
+      "name": "hist_mean__vibration_rms_g__z",
+      "unit": "g",
+      "normalization": "[t-window+1, t-1] 区间标准化均值（无历史时填 0）",
+      "source": "params.vibration_rms_g 历史窗口",
+      "index": 20
+    },
+    {
+      "name": "hist_mean__pointing_error_urad__z",
+      "unit": "urad",
+      "normalization": "[t-window+1, t-1] 区间标准化均值（无历史时填 0）",
+      "source": "params.pointing_error_urad 历史窗口",
+      "index": 21
+    },
+    {
+      "name": "hist_mean__tx_power_dbm__z",
+      "unit": "dBm",
+      "normalization": "[t-window+1, t-1] 区间标准化均值（无历史时填 0）",
+      "source": "params.tx_power_dbm 历史窗口",
+      "index": 22
+    },
+    {
+      "name": "hist_mean__path_loss_db__z",
+      "unit": "dB",
+      "normalization": "[t-window+1, t-1] 区间标准化均值（无历史时填 0）",
+      "source": "params.path_loss_db 历史窗口",
+      "index": 23
+    },
+    {
+      "name": "hist_mean__rx_power_dbm__z",
+      "unit": "dBm",
+      "normalization": "[t-window+1, t-1] 区间标准化均值（无历史时填 0）",
+      "source": "params.rx_power_dbm 历史窗口",
+      "index": 24
+    },
+    {
+      "name": "hist_mean__snr_db__z",
+      "unit": "dB",
+      "normalization": "[t-window+1, t-1] 区间标准化均值（无历史时填 0）",
+      "source": "params.snr_db 历史窗口",
+      "index": 25
+    },
+    {
+      "name": "hist_mean__ber_pre_fec__z",
+      "unit": "ratio",
+      "normalization": "[t-window+1, t-1] 区间标准化均值（无历史时填 0）",
+      "source": "params.ber_pre_fec 历史窗口",
+      "index": 26
+    },
+    {
+      "name": "hist_mean__achievable_rate_gbps__z",
+      "unit": "Gbps",
+      "normalization": "[t-window+1, t-1] 区间标准化均值（无历史时填 0）",
+      "source": "params.achievable_rate_gbps 历史窗口",
+      "index": 27
+    },
+    {
+      "name": "hist_mean__link_delay_ms__z",
+      "unit": "ms",
+      "normalization": "[t-window+1, t-1] 区间标准化均值（无历史时填 0）",
+      "source": "params.link_delay_ms 历史窗口",
+      "index": 28
+    },
+    {
+      "name": "hist_mean__packet_loss_rate__z",
+      "unit": "ratio",
+      "normalization": "[t-window+1, t-1] 区间标准化均值（无历史时填 0）",
+      "source": "params.packet_loss_rate 历史窗口",
+      "index": 29
+    },
+    {
+      "name": "hist_mean__delay_jitter_ms__z",
+      "unit": "ms",
+      "normalization": "[t-window+1, t-1] 区间标准化均值（无历史时填 0）",
+      "source": "params.delay_jitter_ms 历史窗口",
+      "index": 30
+    },
+    {
+      "name": "hist_std__ambient_temperature_k__z",
+      "unit": "-",
+      "normalization": "[t-window+1, t-1] 区间标准化标准差（无历史时填 0）",
+      "source": "params.ambient_temperature_k 历史窗口",
+      "index": 31
+    },
+    {
+      "name": "hist_std__vibration_rms_g__z",
+      "unit": "-",
+      "normalization": "[t-window+1, t-1] 区间标准化标准差（无历史时填 0）",
+      "source": "params.vibration_rms_g 历史窗口",
+      "index": 32
+    },
+    {
+      "name": "hist_std__pointing_error_urad__z",
+      "unit": "-",
+      "normalization": "[t-window+1, t-1] 区间标准化标准差（无历史时填 0）",
+      "source": "params.pointing_error_urad 历史窗口",
+      "index": 33
+    },
+    {
+      "name": "hist_std__tx_power_dbm__z",
+      "unit": "-",
+      "normalization": "[t-window+1, t-1] 区间标准化标准差（无历史时填 0）",
+      "source": "params.tx_power_dbm 历史窗口",
+      "index": 34
+    },
+    {
+      "name": "hist_std__path_loss_db__z",
+      "unit": "-",
+      "normalization": "[t-window+1, t-1] 区间标准化标准差（无历史时填 0）",
+      "source": "params.path_loss_db 历史窗口",
+      "index": 35
+    },
+    {
+      "name": "hist_std__rx_power_dbm__z",
+      "unit": "-",
+      "normalization": "[t-window+1, t-1] 区间标准化标准差（无历史时填 0）",
+      "source": "params.rx_power_dbm 历史窗口",
+      "index": 36
+    },
+    {
+      "name": "hist_std__snr_db__z",
+      "unit": "-",
+      "normalization": "[t-window+1, t-1] 区间标准化标准差（无历史时填 0）",
+      "source": "params.snr_db 历史窗口",
+      "index": 37
+    },
+    {
+      "name": "hist_std__ber_pre_fec__z",
+      "unit": "-",
+      "normalization": "[t-window+1, t-1] 区间标准化标准差（无历史时填 0）",
+      "source": "params.ber_pre_fec 历史窗口",
+      "index": 38
+    },
+    {
+      "name": "hist_std__achievable_rate_gbps__z",
+      "unit": "-",
+      "normalization": "[t-window+1, t-1] 区间标准化标准差（无历史时填 0）",
+      "source": "params.achievable_rate_gbps 历史窗口",
+      "index": 39
+    },
+    {
+      "name": "hist_std__link_delay_ms__z",
+      "unit": "-",
+      "normalization": "[t-window+1, t-1] 区间标准化标准差（无历史时填 0）",
+      "source": "params.link_delay_ms 历史窗口",
+      "index": 40
+    },
+    {
+      "name": "hist_std__packet_loss_rate__z",
+      "unit": "-",
+      "normalization": "[t-window+1, t-1] 区间标准化标准差（无历史时填 0）",
+      "source": "params.packet_loss_rate 历史窗口",
+      "index": 41
+    },
+    {
+      "name": "hist_std__delay_jitter_ms__z",
+      "unit": "-",
+      "normalization": "[t-window+1, t-1] 区间标准化标准差（无历史时填 0）",
+      "source": "params.delay_jitter_ms 历史窗口",
+      "index": 42
+    }
+  ],
+  "condition_dim": 43,
+  "normalization": "先按 transform（log10/identity）变换，再减均值除标准差并裁剪到 ±clip_sigma",
+  "entity_alignment": "按实体切分 60%/20%/20%，同一实体的全部时间步只属于一个划分",
+  "time_alignment": "滑窗样本：目标为 t 时刻，条件为 t-1 时刻观测与 [t-window+1, t-1] 统计量",
+  "missing_policy": "训练数据不允许缺失；出现非有限值直接报错，不做插值掩盖",
+  "source_kind": "physics_simulated",
+  "scaler": {
+    "param_names": [
+      "ambient_temperature_k",
+      "vibration_rms_g",
+      "pointing_error_urad",
+      "tx_power_dbm",
+      "path_loss_db",
+      "rx_power_dbm",
+      "snr_db",
+      "ber_pre_fec",
+      "achievable_rate_gbps",
+      "link_delay_ms",
+      "packet_loss_rate",
+      "delay_jitter_ms"
+    ],
+    "transforms": {
+      "ambient_temperature_k": "identity",
+      "vibration_rms_g": "identity",
+      "pointing_error_urad": "identity",
+      "tx_power_dbm": "identity",
+      "path_loss_db": "identity",
+      "rx_power_dbm": "identity",
+      "snr_db": "identity",
+      "ber_pre_fec": "log10",
+      "achievable_rate_gbps": "identity",
+      "link_delay_ms": "identity",
+      "packet_loss_rate": "log10",
+      "delay_jitter_ms": "log10"
+    },
+    "log10_floors": {
+      "ber_pre_fec": 1e-10,
+      "packet_loss_rate": 1e-06,
+      "delay_jitter_ms": 0.001
+    },
+    "mean": [
+      302.85764921334226,
+      0.11277807471716997,
+      7.823871945741373,
+      22.76791207236473,
+      48.704091367267424,
+      -25.936179295521967,
+      2.0638207055799604,
+      -2.894995799933417,
+      37.959215349260006,
+      4.542011585139265,
+      -4.5479984323389395,
+      -0.3138612727532043
+    ],
+    "std": [
+      0.7003284961348987,
+      0.062374090494036444,
+      2.512078687890006,
+      0.14459323386102504,
+      3.981794720272944,
+      3.9873516877429616,
+      3.9873516782283014,
+      1.9391363621123996,
+      19.621785493660177,
+      1.170469196185768,
+      1.6729559675313055,
+      0.22431104213248368
+    ],
+    "raw_std": [
+      0.7003284961348987,
+      0.062374090494036444,
+      2.512078687890006,
+      0.14459323386102504,
+      3.981794720272944,
+      3.9873516877429616,
+      3.9873516782283014,
+      1.9391363621123996,
+      19.621785493660177,
+      1.170469196185768,
+      1.6729559675313055,
+      0.22431104213248368
+    ],
+    "constant_params": [],
+    "clip_sigma": 6.0,
+    "std_floor": 1e-06,
+    "space": "transform",
+    "bounds_raw": {
+      "ambient_temperature_k": [
+        120.0,
+        400.0
+      ],
+      "vibration_rms_g": [
+        1e-06,
+        2.0
+      ],
+      "pointing_error_urad": [
+        0.001,
+        100.0
+      ],
+      "tx_power_dbm": [
+        -10.0,
+        50.0
+      ],
+      "path_loss_db": [
+        0.001,
+        400.0
+      ],
+      "rx_power_dbm": [
+        -300.0,
+        50.0
+      ],
+      "snr_db": [
+        -60.0,
+        100.0
+      ],
+      "ber_pre_fec": [
+        1e-15,
+        0.5
+      ],
+      "achievable_rate_gbps": [
+        0.0,
+        1000.0
+      ],
+      "link_delay_ms": [
+        1e-06,
+        10000.0
+      ],
+      "packet_loss_rate": [
+        0.0,
+        0.999
+      ],
+      "delay_jitter_ms": [
+        1e-06,
+        10000.0
+      ]
+    },
+    "n_samples": 27720,
+    "n_entities": 154,
+    "fitted_at_utc": "2026-11-02T07:04:16.241716Z"
+  }
+}

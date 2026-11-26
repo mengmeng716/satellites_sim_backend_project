@@ -1,0 +1,563 @@
+{
+  "model_version": "mtp-v1-seed20260101-dfd95359",
+  "model_file": "multitarget_lstm_attn.pt",
+  "created_utc": "2026-11-02T03:54:03.217437Z",
+  "contract_id": "mtp-v2-f22-w48-h5-s1000",
+  "parameter_count": 330063,
+  "model_config": {
+    "input_dim": 22,
+    "hidden_dim": 128,
+    "num_layers": 2,
+    "num_heads": 4,
+    "horizon": 5,
+    "n_targets": 7,
+    "dropout": 0.15,
+    "head_hidden": 128
+  },
+  "target_names": [
+    "achievable_rate_gbps",
+    "delay_jitter_ms",
+    "node_load_ratio",
+    "rx_power_dbm",
+    "ber_pre_fec",
+    "packet_loss_rate",
+    "link_delay_ms"
+  ],
+  "target_units": [
+    "Gbps",
+    "ms",
+    "ratio",
+    "dBm",
+    "ratio",
+    "ratio",
+    "ms"
+  ],
+  "target_entity_types": [
+    "link",
+    "link",
+    "node",
+    "link",
+    "link",
+    "link",
+    "link"
+  ],
+  "target_loss_weights": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "target_statistics": {
+    "achievable_rate_gbps": {
+      "train_mean": 34.59478110430164,
+      "train_std": 18.900484311632088,
+      "n_train_values": 160320,
+      "scaler_mean": 34.59478110430164,
+      "scaler_std": 18.900484311632088
+    },
+    "delay_jitter_ms": {
+      "train_mean": 0.7575777866055969,
+      "train_std": 0.23154213868308698,
+      "n_train_values": 160320,
+      "scaler_mean": 0.7575777866055969,
+      "scaler_std": 0.23154213868308698
+    },
+    "node_load_ratio": {
+      "train_mean": 0.24426799601229135,
+      "train_std": 0.10121514981668438,
+      "n_train_values": 46760,
+      "scaler_mean": 0.24426799601229135,
+      "scaler_std": 0.10121514981668438
+    },
+    "rx_power_dbm": {
+      "train_mean": -26.72213431576531,
+      "train_std": 4.24220032402228,
+      "n_train_values": 160320,
+      "scaler_mean": -26.72213431576531,
+      "scaler_std": 4.24220032402228
+    },
+    "ber_pre_fec": {
+      "train_mean": 0.03571435476396329,
+      "train_std": 0.05706868835592437,
+      "n_train_values": 160320,
+      "scaler_mean": 0.03571435476396329,
+      "scaler_std": 0.05706868835592437
+    },
+    "packet_loss_rate": {
+      "train_mean": 0.01032661879378274,
+      "train_std": 0.02313814608164187,
+      "n_train_values": 160320,
+      "scaler_mean": 0.01032661879378274,
+      "scaler_std": 0.02313814608164187
+    },
+    "link_delay_ms": {
+      "train_mean": 4.295253624734348,
+      "train_std": 0.9050720504029933,
+      "n_train_values": 160320,
+      "scaler_mean": 4.295253624734348,
+      "scaler_std": 0.9050720504029933
+    }
+  },
+  "training": {
+    "epochs": 80,
+    "batch_size": 64,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0001,
+    "grad_clip": 1.0,
+    "patience": 15,
+    "scheduler_factor": 0.5,
+    "scheduler_patience": 4,
+    "min_learning_rate": 1e-05,
+    "dropout": 0.15,
+    "device": "auto",
+    "seed": 20260101,
+    "verbose": true,
+    "best_epoch": 4,
+    "best_val_loss_scaled": 1.1346329557681512,
+    "best_val_mae_scaled": 0.37478348531896605,
+    "epochs_run": 19,
+    "train_seconds": 62.028615600000194,
+    "device_used": "cuda",
+    "torch_version": "2.12.1+cu130",
+    "cuda_available": true,
+    "optimizer": "AdamW",
+    "scheduler": "ReduceLROnPlateau",
+    "loss": "masked SmoothL1(Huber, beta=0.5), target-weighted; 多步残差预测（base=最后观测值）",
+    "model_selection": "仅按验证集标准化 MAE 选择最佳轮次；测试集/跨场景不参与选模"
+  },
+  "history": [
+    {
+      "epoch": 1.0,
+      "train_loss": 1.2683371015103717,
+      "val_loss": 1.2026868691164236,
+      "val_mae": 0.3943770217918124,
+      "learning_rate": 0.001,
+      "seconds": 3.6301889999995183
+    },
+    {
+      "epoch": 2.0,
+      "train_loss": 1.1298984363648525,
+      "val_loss": 1.146536877465289,
+      "val_mae": 0.379782776649671,
+      "learning_rate": 0.001,
+      "seconds": 3.2712283000000753
+    },
+    {
+      "epoch": 3.0,
+      "train_loss": 1.0848049670620343,
+      "val_loss": 1.1386636498911984,
+      "val_mae": 0.3780928536838761,
+      "learning_rate": 0.001,
+      "seconds": 3.2887336000003415
+    },
+    {
+      "epoch": 4.0,
+      "train_loss": 1.0576944148922347,
+      "val_loss": 1.1346329557681512,
+      "val_mae": 0.37478348531896605,
+      "learning_rate": 0.001,
+      "seconds": 3.29417359999934
+    },
+    {
+      "epoch": 5.0,
+      "train_loss": 1.035694335687594,
+      "val_loss": 1.1350308259563793,
+      "val_mae": 0.3761727796534098,
+      "learning_rate": 0.001,
+      "seconds": 3.254588599998897
+    },
+    {
+      "epoch": 6.0,
+      "train_loss": 1.0113824271775094,
+      "val_loss": 1.1615333134203438,
+      "val_mae": 0.381219135396827,
+      "learning_rate": 0.001,
+      "seconds": 3.238478200000827
+    },
+    {
+      "epoch": 7.0,
+      "train_loss": 0.984841208153778,
+      "val_loss": 1.183506657206935,
+      "val_mae": 0.38790934481207756,
+      "learning_rate": 0.001,
+      "seconds": 3.2244276000001264
+    },
+    {
+      "epoch": 8.0,
+      "train_loss": 0.9507623092125985,
+      "val_loss": 1.2147485153262472,
+      "val_mae": 0.39355951038825815,
+      "learning_rate": 0.001,
+      "seconds": 3.241744099999778
+    },
+    {
+      "epoch": 9.0,
+      "train_loss": 0.9137465315281685,
+      "val_loss": 1.2400865401583898,
+      "val_mae": 0.4006878926630032,
+      "learning_rate": 0.0005,
+      "seconds": 3.2346409000001586
+    },
+    {
+      "epoch": 10.0,
+      "train_loss": 0.8332013678723504,
+      "val_loss": 1.272762925282634,
+      "val_mae": 0.4084125645676469,
+      "learning_rate": 0.0005,
+      "seconds": 3.236899800000174
+    },
+    {
+      "epoch": 11.0,
+      "train_loss": 0.7964198965845627,
+      "val_loss": 1.2998906440483822,
+      "val_mae": 0.4147955674356732,
+      "learning_rate": 0.0005,
+      "seconds": 3.2289233000010427
+    },
+    {
+      "epoch": 12.0,
+      "train_loss": 0.7681667117153255,
+      "val_loss": 1.3103827708714686,
+      "val_mae": 0.4166183962906489,
+      "learning_rate": 0.0005,
+      "seconds": 3.2397522999999637
+    },
+    {
+      "epoch": 13.0,
+      "train_loss": 0.7457537996225662,
+      "val_loss": 1.3562583749194062,
+      "val_mae": 0.42711076628457195,
+      "learning_rate": 0.0005,
+      "seconds": 3.246005699998932
+    },
+    {
+      "epoch": 14.0,
+      "train_loss": 0.721796336946801,
+      "val_loss": 1.3538106433327652,
+      "val_mae": 0.4268003963453044,
+      "learning_rate": 0.00025,
+      "seconds": 3.2367818000002444
+    },
+    {
+      "epoch": 15.0,
+      "train_loss": 0.6838545406246626,
+      "val_loss": 1.3827651938638965,
+      "val_mae": 0.43229687071556144,
+      "learning_rate": 0.00025,
+      "seconds": 3.2441061999998055
+    },
+    {
+      "epoch": 16.0,
+      "train_loss": 0.6701666360726384,
+      "val_loss": 1.388921841592959,
+      "val_mae": 0.4344520764705119,
+      "learning_rate": 0.00025,
+      "seconds": 3.2521489999999176
+    },
+    {
+      "epoch": 17.0,
+      "train_loss": 0.66006534896614,
+      "val_loss": 1.383437879664943,
+      "val_mae": 0.43257563134096905,
+      "learning_rate": 0.00025,
+      "seconds": 3.240481799999543
+    },
+    {
+      "epoch": 18.0,
+      "train_loss": 0.6522775106006461,
+      "val_loss": 1.4004864820752987,
+      "val_mae": 0.4369741792521084,
+      "learning_rate": 0.00025,
+      "seconds": 3.1917715999989014
+    },
+    {
+      "epoch": 19.0,
+      "train_loss": 0.6432256384609726,
+      "val_loss": 1.3970587575429279,
+      "val_mae": 0.4359423417050491,
+      "learning_rate": 0.000125,
+      "seconds": 3.215631699998994
+    }
+  ],
+  "data": {
+    "n_train": 41416,
+    "n_val": 14028,
+    "n_test": 14028,
+    "n_cross": 69472,
+    "n_entities": {
+      "train": 62,
+      "val": 21,
+      "test": 21
+    },
+    "split_entity_ids": {
+      "train": [
+        "3600->3601",
+        "3600->3602",
+        "3600->3605",
+        "3600->3606",
+        "3600->3607",
+        "3600->3608",
+        "3600->3609",
+        "3600->3610",
+        "3600->3613",
+        "3600->3614",
+        "3600->3616",
+        "3600->3622",
+        "3600->3623",
+        "3601->3604",
+        "3601->3605",
+        "3601->3606",
+        "3601->3607",
+        "3601->3609",
+        "3601->3611",
+        "3601->3613",
+        "3601->3614",
+        "3601->3615",
+        "3601->3616",
+        "3601->3618",
+        "3601->3619",
+        "3601->3620",
+        "3601->3623",
+        "3601->3600",
+        "3602->3604",
+        "3602->3606",
+        "3602->3608",
+        "3602->3609",
+        "3602->3611",
+        "3602->3613",
+        "3602->3615",
+        "3602->3616",
+        "3602->3617",
+        "3602->3620",
+        "3602->3622",
+        "3602->3600",
+        "3602->3601",
+        "3603->3606",
+        "3603->3607",
+        "3603->3608",
+        "3603->3609",
+        "3603->3611",
+        "3603->3612",
+        "3603->3614",
+        "3600",
+        "3601",
+        "3606",
+        "3608",
+        "3609",
+        "3610",
+        "3612",
+        "3613",
+        "3614",
+        "3615",
+        "3616",
+        "3619",
+        "3620",
+        "3622"
+      ],
+      "val": [
+        "3600->3604",
+        "3600->3611",
+        "3600->3617",
+        "3600->3618",
+        "3600->3621",
+        "3601->3602",
+        "3601->3603",
+        "3601->3608",
+        "3601->3622",
+        "3602->3603",
+        "3602->3605",
+        "3602->3610",
+        "3602->3612",
+        "3602->3619",
+        "3603->3610",
+        "3603->3613",
+        "3604",
+        "3605",
+        "3617",
+        "3618",
+        "3623"
+      ],
+      "test": [
+        "3600->3603",
+        "3600->3612",
+        "3600->3615",
+        "3600->3619",
+        "3600->3620",
+        "3601->3610",
+        "3601->3612",
+        "3601->3617",
+        "3601->3621",
+        "3602->3607",
+        "3602->3614",
+        "3602->3618",
+        "3602->3621",
+        "3602->3623",
+        "3603->3604",
+        "3603->3605",
+        "3602",
+        "3603",
+        "3607",
+        "3611",
+        "3621"
+      ]
+    },
+    "contract_id": "mtp-v2-f22-w48-h5-s1000",
+    "window": 48,
+    "horizon": 5,
+    "targets": [
+      "achievable_rate_gbps",
+      "delay_jitter_ms",
+      "node_load_ratio",
+      "rx_power_dbm",
+      "ber_pre_fec",
+      "packet_loss_rate",
+      "link_delay_ms"
+    ],
+    "provenance": {
+      "source_kind": "physics_simulated",
+      "module": "src.sensing.physics",
+      "module_sha256": "361905f443974f58268af9785544269234e05f5201c4aa17e0be4481a9f2ca70",
+      "physics_import_error": "",
+      "fallback": false,
+      "fallback_note": "",
+      "seed": 20260101,
+      "n_entities": 104,
+      "n_links": 80,
+      "n_nodes": 24,
+      "n_steps": 720,
+      "dt_s": 1.0,
+      "entity_type_mapping": "前 n_links 行=link，后 n_nodes 行=node（物理序列按行号对应实体）",
+      "derived_channels": {
+        "node_load_gbps": "node_load_ratio * 400.0 Gbps（src.config.MAX_NODE_FLOW_GBPS）"
+      },
+      "observation_model": {
+        "enabled": true,
+        "scale": 1.0,
+        "seed": 20260101,
+        "spec": {
+          "ambient_temperature_k": {
+            "kind": "additive",
+            "abs": 0.8,
+            "rel": 0.0
+          },
+          "vibration_rms_g": {
+            "kind": "additive",
+            "abs": 0.006,
+            "rel": 0.0
+          },
+          "pointing_error_urad": {
+            "kind": "additive",
+            "abs": 0.15,
+            "rel": 0.0
+          },
+          "tx_power_dbm": {
+            "kind": "additive",
+            "abs": 0.15,
+            "rel": 0.0
+          },
+          "path_loss_db": {
+            "kind": "additive",
+            "abs": 0.1,
+            "rel": 0.0
+          },
+          "rx_power_dbm": {
+            "kind": "additive",
+            "abs": 0.35,
+            "rel": 0.0
+          },
+          "snr_db": {
+            "kind": "additive",
+            "abs": 0.35,
+            "rel": 0.0
+          },
+          "ber_pre_fec": {
+            "kind": "multiplicative",
+            "abs": 0.0,
+            "rel": 0.35
+          },
+          "achievable_rate_gbps": {
+            "kind": "additive",
+            "abs": 1.2,
+            "rel": 0.005
+          },
+          "link_delay_ms": {
+            "kind": "additive",
+            "abs": 0.08,
+            "rel": 0.002
+          },
+          "packet_loss_rate": {
+            "kind": "additive",
+            "abs": 0.004,
+            "rel": 0.0
+          },
+          "delay_jitter_ms": {
+            "kind": "additive",
+            "abs": 0.035,
+            "rel": 0.02
+          },
+          "node_load_ratio": {
+            "kind": "additive",
+            "abs": 0.018,
+            "rel": 0.0
+          },
+          "node_load_gbps": {
+            "kind": "additive",
+            "abs": 2.0,
+            "rel": 0.0
+          },
+          "throughput_gbps": {
+            "kind": "additive",
+            "abs": 0.8,
+            "rel": 0.0
+          },
+          "queue_occupancy_ratio": {
+            "kind": "additive",
+            "abs": 0.015,
+            "rel": 0.0
+          }
+        },
+        "note": "输入侧传感/遥测误差；标签为 physics 物理真值。"
+      },
+      "cross_scenario_seed": 20260215,
+      "cross_scenario_source": "physics_simulated",
+      "entity_split": {
+        "strategy": "按实体类型分层、实体级 60/20/20；窗口不跨实体",
+        "ratios": [
+          0.6,
+          0.2,
+          0.2
+        ],
+        "counts": {
+          "train": 62,
+          "val": 21,
+          "test": 21
+        }
+      }
+    },
+    "config": {
+      "n_links": 80,
+      "n_nodes": 24,
+      "n_steps": 720,
+      "dt_s": 1.0,
+      "seed": 20260101,
+      "cross_seed": 20260215,
+      "observation_noise": true,
+      "observation_scale": 1.0
+    },
+    "constant_targets": []
+  },
+  "seed_policy": {
+    "primary_seed": 20260101,
+    "declared_before_training": true,
+    "seed_selection": "单 seed 主结果；未按测试结果挑 seed",
+    "extra_seed_results": []
+  },
+  "notes": [
+    "输入为含传感/遥测误差的观测历史，标签为 physics 物理真值；观测误差表在 dataset.OBSERVATION_NOISE_SPEC 中冻结。",
+    "标签与输入均不包含预测发起时刻之后的未来信息。",
+    "标准化统计量只来自训练集。"
+  ]
+}

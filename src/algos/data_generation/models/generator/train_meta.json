@@ -1,0 +1,451 @@
+{
+  "schema_version": "2.0",
+  "created_at_utc": "2026-11-02T07:05:39.922226Z",
+  "model_version": "generative-cvae-v1-4a446f5b06b9",
+  "model_class": "MultilayerCVaE",
+  "model_config": {
+    "x_dim": 12,
+    "cond_dim": 43,
+    "latent_dim": 8,
+    "hidden": 128
+  },
+  "n_parameters": 50460,
+  "epochs": 60,
+  "best_epoch": 47,
+  "best_val_loss": 0.035641784208837436,
+  "best_val_loss_at_epoch_beta": 0.035641784173860526,
+  "selection_metric": "val_loss_with_beta_end",
+  "final_epoch": {
+    "epoch": 60,
+    "beta": 1.0,
+    "train_loss": 0.048303,
+    "train_recon": 0.047973,
+    "train_kl": 0.00033,
+    "train_kl_raw": 3.682077,
+    "val_loss": 0.035921,
+    "val_recon": 0.035052,
+    "val_kl": 0.000869,
+    "val_kl_raw": 3.722791,
+    "val_loss_beta_end": 0.035921,
+    "epoch_seconds": 1.3376
+  },
+  "train_config": {
+    "epochs": 60,
+    "batch_size": 256,
+    "eval_batch_size": 1024,
+    "lr": 0.001,
+    "weight_decay": 0.0,
+    "seed": 20260101,
+    "latent_dim": 8,
+    "hidden": 128,
+    "window": 8,
+    "beta_start": 0.0,
+    "beta_end": 1.0,
+    "beta_warmup_epochs": 15,
+    "free_bits": 0.5,
+    "n_entities": 32,
+    "n_steps": 180,
+    "n_batches": 8,
+    "dt_s": 1.0,
+    "condition_noise": 0.4,
+    "device": "auto",
+    "model_dir": null,
+    "evidence_dir": null,
+    "train_ratio": 0.6,
+    "val_ratio": 0.2
+  },
+  "device": {
+    "resolved": "cuda",
+    "cuda_available": true,
+    "torch_version": "2.12.1+cu130",
+    "cuda_version": "13.0",
+    "gpu_name": "NVIDIA GeForce RTX 5070"
+  },
+  "seeds": {
+    "python": 20260101,
+    "numpy": 20260101,
+    "torch": 20260101
+  },
+  "timing": {
+    "started_at_utc": "2026-11-02T07:04:16.120202Z",
+    "finished_at_utc": "2026-11-02T07:05:39.922226Z",
+    "total_seconds": 83.802,
+    "mean_epoch_seconds": 1.3738,
+    "epoch_seconds": [
+      1.8339,
+      1.3066,
+      1.2789,
+      1.4319,
+      1.4557,
+      1.3981,
+      1.3658,
+      1.4988,
+      1.5731,
+      1.52,
+      1.466,
+      1.5843,
+      1.5925,
+      2.0931,
+      1.4264,
+      1.3456,
+      1.3189,
+      1.3598,
+      1.4791,
+      1.5147,
+      1.2972,
+      1.2836,
+      1.3704,
+      1.2735,
+      1.3299,
+      1.3318,
+      1.2935,
+      1.3509,
+      1.3552,
+      1.3871,
+      1.2849,
+      1.3007,
+      1.1979,
+      1.3214,
+      1.3425,
+      1.3067,
+      1.358,
+      1.2651,
+      1.3298,
+      1.3268,
+      1.3652,
+      1.3323,
+      1.2539,
+      1.3155,
+      1.3737,
+      1.2839,
+      1.3211,
+      1.3337,
+      1.3044,
+      1.3129,
+      1.3081,
+      1.2934,
+      1.3095,
+      1.33,
+      1.3254,
+      1.2676,
+      1.3268,
+      1.2263,
+      1.3576,
+      1.3376
+    ]
+  },
+  "split": {
+    "strategy": "按实体切分，同一实体的全部时间步只属于一个划分",
+    "n_entities": 256,
+    "train_entities": 154,
+    "val_entities": 51,
+    "test_entities": 51,
+    "train_samples": 27720,
+    "val_samples": 9180,
+    "test_samples": 9180,
+    "window": 8,
+    "n_samples_total": 46080
+  },
+  "data_provenance": {
+    "source_kind": "physics_simulated",
+    "module": "src.sensing.physics.simulate_parameter_series",
+    "method_id": "laser-link-budget-v1",
+    "fallback": false,
+    "fallback_reason": "",
+    "delivery_valid": true,
+    "seeds": [
+      20260101,
+      20268020,
+      20275939,
+      20283858,
+      20291777,
+      20299696,
+      20307615,
+      20315534
+    ],
+    "n_entities": 256,
+    "n_steps": 180,
+    "dt_s": 1.0,
+    "batches": 8,
+    "created_at_utc": "2026-11-02T07:04:16.237205Z",
+    "physics_module": {
+      "path": "D:\\2Project\\大规模卫星网络状态感知与拓扑控制仿真验证系统\\large-scale-simulation\\src\\sensing\\physics.py",
+      "sha256": "97e09d2f3788942c59f37fcf43b9891bcc4735ef8467031abcf7f506b3ac6e24",
+      "mtime_utc": "2026-11-02T07:03:53.934697Z"
+    },
+    "note": "物理模型正向计算生成，非在轨实测数据。"
+  },
+  "fallback_training_data": false,
+  "delivery_valid": true,
+  "scaler": {
+    "mean": [
+      302.85764921334226,
+      0.11277807471716997,
+      7.823871945741373,
+      22.76791207236473,
+      48.704091367267424,
+      -25.936179295521967,
+      2.0638207055799604,
+      -2.894995799933417,
+      37.959215349260006,
+      4.542011585139265,
+      -4.5479984323389395,
+      -0.3138612727532043
+    ],
+    "std": [
+      0.7003284961348987,
+      0.062374090494036444,
+      2.512078687890006,
+      0.14459323386102504,
+      3.981794720272944,
+      3.9873516877429616,
+      3.9873516782283014,
+      1.9391363621123996,
+      19.621785493660177,
+      1.170469196185768,
+      1.6729559675313055,
+      0.22431104213248368
+    ],
+    "transforms": {
+      "ambient_temperature_k": "identity",
+      "vibration_rms_g": "identity",
+      "pointing_error_urad": "identity",
+      "tx_power_dbm": "identity",
+      "path_loss_db": "identity",
+      "rx_power_dbm": "identity",
+      "snr_db": "identity",
+      "ber_pre_fec": "log10",
+      "achievable_rate_gbps": "identity",
+      "link_delay_ms": "identity",
+      "packet_loss_rate": "log10",
+      "delay_jitter_ms": "log10"
+    },
+    "constant_params": [],
+    "fit_entities": "train",
+    "path": "D:\\2Project\\大规模卫星网络状态感知与拓扑控制仿真验证系统\\large-scale-simulation\\models\\generator\\scaler.json"
+  },
+  "feature_contract_id": "generative-multilayer-cvae-v1",
+  "feature_contract_path": "D:\\2Project\\大规模卫星网络状态感知与拓扑控制仿真验证系统\\large-scale-simulation\\models\\generator\\feature_contract.json",
+  "condition_dim": 43,
+  "latent_manifold": {
+    "path": "D:\\2Project\\大规模卫星网络状态感知与拓扑控制仿真验证系统\\large-scale-simulation\\models\\generator\\manifold.json",
+    "kl_nats_mean": 3.702634199689856,
+    "active_dims": 8
+  },
+  "reconstruction": {
+    "train": {
+      "n_samples": 8192,
+      "overall_standardized_mae": 0.08613557597267552,
+      "per_param": {
+        "ambient_temperature_k": {
+          "standardized_mae": 0.17676280970904745,
+          "raw_mae": 0.12379203269611654,
+          "median_relative_error": 0.00033777032420325044
+        },
+        "vibration_rms_g": {
+          "standardized_mae": 0.08896067204664249,
+          "raw_mae": 0.005548841008647576,
+          "median_relative_error": 0.03908665232788422
+        },
+        "pointing_error_urad": {
+          "standardized_mae": 0.06537798848224874,
+          "raw_mae": 0.16423465152337535,
+          "median_relative_error": 0.014923494670792644
+        },
+        "tx_power_dbm": {
+          "standardized_mae": 0.23184377002750622,
+          "raw_mae": 0.033523040458808925,
+          "median_relative_error": 0.0012364368023465365
+        },
+        "path_loss_db": {
+          "standardized_mae": 0.05185648074738847,
+          "raw_mae": 0.20648186125188694,
+          "median_relative_error": 0.0030276021557024205
+        },
+        "rx_power_dbm": {
+          "standardized_mae": 0.051339025620730894,
+          "raw_mae": 0.20470675045590048,
+          "median_relative_error": 0.005721135534595238
+        },
+        "snr_db": {
+          "standardized_mae": 0.05163673303242433,
+          "raw_mae": 0.20589381411506394,
+          "median_relative_error": 0.04676899714746033
+        },
+        "ber_pre_fec": {
+          "standardized_mae": 0.05561888707506846,
+          "raw_mae": 0.0029221544079105354,
+          "median_relative_error": 0.14893366472519964
+        },
+        "achievable_rate_gbps": {
+          "standardized_mae": 0.05313730453131882,
+          "raw_mae": 1.0426487912248348,
+          "median_relative_error": 0.021774089717107516
+        },
+        "link_delay_ms": {
+          "standardized_mae": 0.032455916752862635,
+          "raw_mae": 0.037988650793195335,
+          "median_relative_error": 0.006323593493259802
+        },
+        "packet_loss_rate": {
+          "standardized_mae": 0.05530964419989459,
+          "raw_mae": 0.0013260059657273148,
+          "median_relative_error": 10623.313334468137
+        },
+        "delay_jitter_ms": {
+          "standardized_mae": 0.11932767944697309,
+          "raw_mae": 0.03447425242374275,
+          "median_relative_error": 0.04572270934826432
+        }
+      }
+    },
+    "val": {
+      "n_samples": 8192,
+      "overall_standardized_mae": 0.0899821863436621,
+      "per_param": {
+        "ambient_temperature_k": {
+          "standardized_mae": 0.1849154841191023,
+          "raw_mae": 0.12950158290518768,
+          "median_relative_error": 0.0003646974070884172
+        },
+        "vibration_rms_g": {
+          "standardized_mae": 0.09274613371679052,
+          "raw_mae": 0.005784955737423096,
+          "median_relative_error": 0.03977600840134672
+        },
+        "pointing_error_urad": {
+          "standardized_mae": 0.06610689805622139,
+          "raw_mae": 0.16606572972955103,
+          "median_relative_error": 0.014426666919945002
+        },
+        "tx_power_dbm": {
+          "standardized_mae": 0.24635685480064096,
+          "raw_mae": 0.03562153431945565,
+          "median_relative_error": 0.0013225689262200127
+        },
+        "path_loss_db": {
+          "standardized_mae": 0.05377276279105492,
+          "raw_mae": 0.2141121029759119,
+          "median_relative_error": 0.0031656606476380875
+        },
+        "rx_power_dbm": {
+          "standardized_mae": 0.05343906726375028,
+          "raw_mae": 0.2130803550455243,
+          "median_relative_error": 0.005912644912690438
+        },
+        "snr_db": {
+          "standardized_mae": 0.05382879649700381,
+          "raw_mae": 0.21463434204933787,
+          "median_relative_error": 0.04678600061780186
+        },
+        "ber_pre_fec": {
+          "standardized_mae": 0.060187458014421935,
+          "raw_mae": 0.003240920929255784,
+          "median_relative_error": 0.15753451802324064
+        },
+        "achievable_rate_gbps": {
+          "standardized_mae": 0.05750099065233816,
+          "raw_mae": 1.128272104253138,
+          "median_relative_error": 0.02286767528844845
+        },
+        "link_delay_ms": {
+          "standardized_mae": 0.032352818841197006,
+          "raw_mae": 0.03786797786339963,
+          "median_relative_error": 0.006756625320271338
+        },
+        "packet_loss_rate": {
+          "standardized_mae": 0.0568999369032781,
+          "raw_mae": 0.0013414991456558144,
+          "median_relative_error": 10320.477294491848
+        },
+        "delay_jitter_ms": {
+          "standardized_mae": 0.12167903446814576,
+          "raw_mae": 0.0367519266157153,
+          "median_relative_error": 0.046644670050024636
+        }
+      }
+    },
+    "test": {
+      "n_samples": 8192,
+      "overall_standardized_mae": 0.09117014137657543,
+      "per_param": {
+        "ambient_temperature_k": {
+          "standardized_mae": 0.18683328553768064,
+          "raw_mae": 0.13084467388854587,
+          "median_relative_error": 0.0003600506335680302
+        },
+        "vibration_rms_g": {
+          "standardized_mae": 0.09427673672260894,
+          "raw_mae": 0.00588042570781846,
+          "median_relative_error": 0.04227869278228392
+        },
+        "pointing_error_urad": {
+          "standardized_mae": 0.06916722199603598,
+          "raw_mae": 0.17375350427679884,
+          "median_relative_error": 0.015370168295140981
+        },
+        "tx_power_dbm": {
+          "standardized_mae": 0.24572272449242316,
+          "raw_mae": 0.03552984336750116,
+          "median_relative_error": 0.0013330162638580715
+        },
+        "path_loss_db": {
+          "standardized_mae": 0.05409903048022979,
+          "raw_mae": 0.21541123393806405,
+          "median_relative_error": 0.003063670148446595
+        },
+        "rx_power_dbm": {
+          "standardized_mae": 0.053212765868943634,
+          "raw_mae": 0.21217801179700346,
+          "median_relative_error": 0.005686405121567979
+        },
+        "snr_db": {
+          "standardized_mae": 0.05376519663853152,
+          "raw_mae": 0.21438074704692328,
+          "median_relative_error": 0.041099428331941384
+        },
+        "ber_pre_fec": {
+          "standardized_mae": 0.06694838171117312,
+          "raw_mae": 0.0029966140678127193,
+          "median_relative_error": 0.16611870934364165
+        },
+        "achievable_rate_gbps": {
+          "standardized_mae": 0.05754445560239008,
+          "raw_mae": 1.1291249641795498,
+          "median_relative_error": 0.021816700555377704
+        },
+        "link_delay_ms": {
+          "standardized_mae": 0.03283550987314143,
+          "raw_mae": 0.0384329528475657,
+          "median_relative_error": 0.006701854126296298
+        },
+        "packet_loss_rate": {
+          "standardized_mae": 0.05671460345788848,
+          "raw_mae": 0.0016178903883708197,
+          "median_relative_error": 16319.418310912744
+        },
+        "delay_jitter_ms": {
+          "standardized_mae": 0.12292178413785848,
+          "raw_mae": 0.03616989577516723,
+          "median_relative_error": 0.04706246558532212
+        }
+      }
+    }
+  },
+  "artifacts": {
+    "checkpoint": "D:\\2Project\\大规模卫星网络状态感知与拓扑控制仿真验证系统\\large-scale-simulation\\models\\generator\\cvae_multilayer.pt",
+    "scaler": "D:\\2Project\\大规模卫星网络状态感知与拓扑控制仿真验证系统\\large-scale-simulation\\models\\generator\\scaler.json",
+    "feature_contract": "D:\\2Project\\大规模卫星网络状态感知与拓扑控制仿真验证系统\\large-scale-simulation\\models\\generator\\feature_contract.json",
+    "train_meta": "D:\\2Project\\大规模卫星网络状态感知与拓扑控制仿真验证系统\\large-scale-simulation\\models\\generator\\train_meta.json",
+    "train_history": "D:\\2Project\\大规模卫星网络状态感知与拓扑控制仿真验证系统\\large-scale-simulation\\models\\generator\\train_history.json",
+    "manifold": "D:\\2Project\\大规模卫星网络状态感知与拓扑控制仿真验证系统\\large-scale-simulation\\models\\generator\\manifold.json"
+  },
+  "hashes": {
+    "sha256_weights": "4a446f5b06b93900712bd009dfca2748dc88d09866562c0e151a1fe2bc75d1bd",
+    "sha256_checkpoint_file": "4eead4fd6478a13fb689c044cd06764a39b7119f216efa22a509e4a84c8f7adb"
+  },
+  "notes": [
+    "best 模型按验证集损失（beta=beta_end 的最终目标）选取，避免 KL 退火初期的选择偏差。",
+    "标准化统计量仅在训练实体上拟合，随模型一起保存。"
+  ]
+}

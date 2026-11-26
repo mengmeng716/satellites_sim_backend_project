@@ -18,7 +18,7 @@ class ForwardingDelayParams:
 class TopReconstructionConfig:
     offset_window: int = 1
     max_switch_rate: Optional[float] = 0.10
-    min_average_reduction_rate: float = 0.10
+    min_average_reduction_rate: float = 0.0
     business_intensity_horizon_steps: int = 6
     business_intensity_decay_lambda: float = 0.15
     protected_link_intensity_threshold: float = 0.5

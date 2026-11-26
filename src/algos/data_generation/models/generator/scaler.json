@@ -1,0 +1,136 @@
+{
+  "param_names": [
+    "ambient_temperature_k",
+    "vibration_rms_g",
+    "pointing_error_urad",
+    "tx_power_dbm",
+    "path_loss_db",
+    "rx_power_dbm",
+    "snr_db",
+    "ber_pre_fec",
+    "achievable_rate_gbps",
+    "link_delay_ms",
+    "packet_loss_rate",
+    "delay_jitter_ms"
+  ],
+  "transforms": {
+    "ambient_temperature_k": "identity",
+    "vibration_rms_g": "identity",
+    "pointing_error_urad": "identity",
+    "tx_power_dbm": "identity",
+    "path_loss_db": "identity",
+    "rx_power_dbm": "identity",
+    "snr_db": "identity",
+    "ber_pre_fec": "log10",
+    "achievable_rate_gbps": "identity",
+    "link_delay_ms": "identity",
+    "packet_loss_rate": "log10",
+    "delay_jitter_ms": "log10"
+  },
+  "log10_floors": {
+    "ber_pre_fec": 1e-10,
+    "packet_loss_rate": 1e-06,
+    "delay_jitter_ms": 0.001
+  },
+  "mean": [
+    302.85764921334226,
+    0.11277807471716997,
+    7.823871945741373,
+    22.76791207236473,
+    48.704091367267424,
+    -25.936179295521967,
+    2.0638207055799604,
+    -2.894995799933417,
+    37.959215349260006,
+    4.542011585139265,
+    -4.5479984323389395,
+    -0.3138612727532043
+  ],
+  "std": [
+    0.7003284961348987,
+    0.062374090494036444,
+    2.512078687890006,
+    0.14459323386102504,
+    3.981794720272944,
+    3.9873516877429616,
+    3.9873516782283014,
+    1.9391363621123996,
+    19.621785493660177,
+    1.170469196185768,
+    1.6729559675313055,
+    0.22431104213248368
+  ],
+  "raw_std": [
+    0.7003284961348987,
+    0.062374090494036444,
+    2.512078687890006,
+    0.14459323386102504,
+    3.981794720272944,
+    3.9873516877429616,
+    3.9873516782283014,
+    1.9391363621123996,
+    19.621785493660177,
+    1.170469196185768,
+    1.6729559675313055,
+    0.22431104213248368
+  ],
+  "constant_params": [],
+  "clip_sigma": 6.0,
+  "std_floor": 1e-06,
+  "space": "transform",
+  "bounds_raw": {
+    "ambient_temperature_k": [
+      120.0,
+      400.0
+    ],
+    "vibration_rms_g": [
+      1e-06,
+      2.0
+    ],
+    "pointing_error_urad": [
+      0.001,
+      100.0
+    ],
+    "tx_power_dbm": [
+      -10.0,
+      50.0
+    ],
+    "path_loss_db": [
+      0.001,
+      400.0
+    ],
+    "rx_power_dbm": [
+      -300.0,
+      50.0
+    ],
+    "snr_db": [
+      -60.0,
+      100.0
+    ],
+    "ber_pre_fec": [
+      1e-15,
+      0.5
+    ],
+    "achievable_rate_gbps": [
+      0.0,
+      1000.0
+    ],
+    "link_delay_ms": [
+      1e-06,
+      10000.0
+    ],
+    "packet_loss_rate": [
+      0.0,
+      0.999
+    ],
+    "delay_jitter_ms": [
+      1e-06,
+      10000.0
+    ]
+  },
+  "n_samples": 27720,
+  "n_entities": 154,
+  "fitted_at_utc": "2026-11-02T07:04:16.241716Z",
+  "feature_contract_id": "generative-multilayer-cvae-v1",
+  "model_version": "generative-cvae-v1-4a446f5b06b9"
+}

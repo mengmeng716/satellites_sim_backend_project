@@ -1,0 +1,169 @@
+{
+  "version": "mtp-v2",
+  "contract_id": "mtp-v2-f22-w48-h5-s1000",
+  "window": 48,
+  "horizon": 5,
+  "step_ms": 1000,
+  "feature_names": [
+    "ambient_temperature_k",
+    "vibration_rms_g",
+    "pointing_error_urad",
+    "tx_power_dbm",
+    "path_loss_db",
+    "rx_power_dbm",
+    "snr_db",
+    "ber_pre_fec",
+    "achievable_rate_gbps",
+    "link_delay_ms",
+    "packet_loss_rate",
+    "delay_jitter_ms",
+    "node_load_ratio",
+    "node_load_gbps",
+    "throughput_gbps",
+    "queue_occupancy_ratio",
+    "queue_occupancy_ratio_sq",
+    "age_norm",
+    "tod_sin",
+    "tod_cos",
+    "orbit_sin",
+    "orbit_cos"
+  ],
+  "feature_units": [
+    "K",
+    "g",
+    "urad",
+    "dBm",
+    "dB",
+    "dBm",
+    "dB",
+    "ratio",
+    "Gbps",
+    "ms",
+    "ratio",
+    "ms",
+    "ratio",
+    "Gbps",
+    "Gbps",
+    "ratio",
+    "ratio^2",
+    "ratio",
+    "ratio",
+    "ratio",
+    "ratio",
+    "ratio"
+  ],
+  "observed_feature_names": [
+    "ambient_temperature_k",
+    "vibration_rms_g",
+    "pointing_error_urad",
+    "tx_power_dbm",
+    "path_loss_db",
+    "rx_power_dbm",
+    "snr_db",
+    "ber_pre_fec",
+    "achievable_rate_gbps",
+    "link_delay_ms",
+    "packet_loss_rate",
+    "delay_jitter_ms",
+    "node_load_ratio",
+    "node_load_gbps",
+    "throughput_gbps",
+    "queue_occupancy_ratio"
+  ],
+  "derived_feature_names": [
+    "queue_occupancy_ratio_sq"
+  ],
+  "derived_feature_units": [
+    "ratio^2"
+  ],
+  "time_feature_names": [
+    "age_norm",
+    "tod_sin",
+    "tod_cos",
+    "orbit_sin",
+    "orbit_cos"
+  ],
+  "target_names": [
+    "achievable_rate_gbps",
+    "delay_jitter_ms",
+    "node_load_ratio",
+    "rx_power_dbm",
+    "ber_pre_fec",
+    "packet_loss_rate",
+    "link_delay_ms"
+  ],
+  "target_units": [
+    "Gbps",
+    "ms",
+    "ratio",
+    "dBm",
+    "ratio",
+    "ratio",
+    "ms"
+  ],
+  "target_entity_types": [
+    "link",
+    "link",
+    "node",
+    "link",
+    "link",
+    "link",
+    "link"
+  ],
+  "target_feature_indices": [
+    8,
+    11,
+    12,
+    5,
+    7,
+    10,
+    9
+  ],
+  "target_loss_weights": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "orbit_period_s": 5680.0,
+  "time_feature_spec": {
+    "day_period_s": 86400.0,
+    "orbit_period_s": 5680.0,
+    "tod_reference": "sim_time_s 为场景当地秒数，模 86400",
+    "age_norm": "窗口内相对位置，0=最新一步，1=最老一步"
+  },
+  "graph_contract": {
+    "version": "entity-graph-v1",
+    "rationale": "预测实体是有向链路与节点：链路按“共享端点”建无向图（两条链路共享同一卫星即相邻），节点按拓扑邻接建图，并加入链路—端点节点的异构边；自环 + 对称归一化。",
+    "entity_space": {
+      "source": "src.prediction.dataset._entity_ids / WindowedDataset.C['entity_ids']",
+      "pattern": {
+        "link": "^\\d+->\\d+$（有向链路 'u->v'，端点 u/v 为卫星节点 ID）",
+        "node": "^\\d+$（纯数字节点 ID）"
+      },
+      "ordering": "前 n_links 行 = link，后 n_nodes 行 = node（与 dataset 一致）"
+    },
+    "edge_rules": {
+      "link_link": "两条链路 (u,v) 与 (u',v') 共享任一端点（u==u' 或 u==v' 或 v==u' 或 v==v'）即为无向相邻",
+      "node_node": "两节点之间存在任一方向的已登记链路即为无向相邻；链路取自场景完整拓扑（静态结构，不读取观测特征）",
+      "link_node": "链路与其两个端点节点相邻（异构边）：节点负载可聚合入射链路状态，链路可聚合端点负载",
+      "self_loops": true,
+      "directedness": "原链路为有向，图为无向（共享端点关系对称）"
+    },
+    "normalization": {
+      "gcn": "A_hat = D^{-1/2}(A+I)D^{-1/2}",
+      "gat": "同一邻接掩码（含自环）上做邻域 LeakyReLU 注意力 + softmax"
+    },
+    "split_policy": {
+      "rule": "按实体切分后取子图：训练/验证/测试分别只用本切分实体的诱导子图",
+      "link_link": "只在当前子集内的链路之间建边",
+      "link_node": "只在当前子集内的节点上建边",
+      "node_node": "使用静态拓扑结构（不含任何其他切分实体的观测特征）",
+      "leakage": "模型从不把验证/测试实体的观测当作输入；图结构本身是公开静态拓扑"
+    },
+    "topology_source": "scene_topology"
+  }
+}

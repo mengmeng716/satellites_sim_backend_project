@@ -28,6 +28,7 @@ from .evaluation import (
     summarize_paths,
     topology_to_graph,
 )
+from src import config as project_config
 from src.utils.link_distance import calculate_link_distance
 
 from scipy.optimize import linear_sum_assignment
@@ -121,6 +122,9 @@ def build_candidate_graph(
             target_lon,
             orbit_height_km,
         )
+        # 候选异轨链路不得超过星座最大建链斜距
+        if distance > float(getattr(project_config, "MAX_SLANT_RANGE_KM", float("inf"))):
+            return
         existing = graph[source_id].get(target_id)
         if existing is None or distance < existing:
             graph[source_id][target_id] = distance
@@ -576,6 +580,7 @@ def run_reconfiguration_decision(
     forwarding_delay_ms_by_node: Optional[Mapping[int, float]] = None,
     link_business_intensity: Optional[Mapping[Tuple[int, int], float]] = None,
     protected_link_intensity_threshold: Optional[float] = None,
+    capacity_selector=None,
 ) -> ReconfigurationResult:
     pairs = [
         (int(source), int(target))
@@ -600,26 +605,34 @@ def run_reconfiguration_decision(
         orbit_height_km,
         offset_window=offset_window,
     )
-    candidate_paths = compute_pair_paths(
-        candidate_graph,
-        pairs,
-        default_forwarding_delay_ms,
-        forwarding_delay_ms_by_node,
-    )
-    decision_start = perf_counter()
-    reconfigured_topology = select_reconfigured_topology(
-        initial_topology,
-        candidate_graph,
-        candidate_paths,
-        num_planes=num_planes,
-        sats_per_plane=sats_per_plane,
-        link_capacity_gbps=link_capacity_gbps,
-        max_switch_rate=max_switch_rate,
-        default_forwarding_delay_ms=default_forwarding_delay_ms,
-        forwarding_delay_ms_by_node=forwarding_delay_ms_by_node,
-        link_business_intensity=link_business_intensity,
-        protected_link_intensity_threshold=protected_link_intensity_threshold,
-    )
+    if capacity_selector is None:
+        candidate_paths = compute_pair_paths(
+            candidate_graph,
+            pairs,
+            default_forwarding_delay_ms,
+            forwarding_delay_ms_by_node,
+        )
+        decision_start = perf_counter()
+        reconfigured_topology = select_reconfigured_topology(
+            initial_topology,
+            candidate_graph,
+            candidate_paths,
+            num_planes=num_planes,
+            sats_per_plane=sats_per_plane,
+            link_capacity_gbps=link_capacity_gbps,
+            max_switch_rate=max_switch_rate,
+            default_forwarding_delay_ms=default_forwarding_delay_ms,
+            forwarding_delay_ms_by_node=forwarding_delay_ms_by_node,
+            link_business_intensity=link_business_intensity,
+            protected_link_intensity_threshold=protected_link_intensity_threshold,
+        )
+    else:
+        decision_start = perf_counter()
+        reconfigured_topology = capacity_selector(
+            initial_topology,
+            candidate_graph,
+            link_business_intensity,
+        ) or initial_topology
     topology_decision_time_ms = (perf_counter() - decision_start) * 1000.0
     reconfigured_graph = topology_to_graph(reconfigured_topology)
     reconfigured_paths = compute_pair_paths(

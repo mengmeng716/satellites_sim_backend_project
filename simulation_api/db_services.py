@@ -222,7 +222,7 @@ def build_key_metrics_payload():
         }
     }
 
-@shared_task
+@shared_task(ignore_result=True)
 def save_prediction_results(output_json):
     """
     将链路预测算法接口吐出的数据，打平并批量存入 MySQL
@@ -273,7 +273,7 @@ def save_prediction_results(output_json):
     TopologyLinkPrediction.objects.bulk_create(predictions_to_insert, batch_size=5000)
     print("====== 预测结果已成功批量写入 MySQL ======")
 
-@shared_task
+@shared_task(ignore_result=True)
 def save_reconstruction_results(result_json):
     """
     异步解构拓扑重构的结果并存入不同关系表中
@@ -361,7 +361,7 @@ def save_reconstruction_results(result_json):
     print(f"====== 快照 {snapshot.snapshot_id} 已成功写入数据库！======")
 
 
-@shared_task
+@shared_task(ignore_result=True)
 def save_routing_demands(demand_json):
     """
     异步解构生成的路由需求并存入数据库
@@ -398,7 +398,7 @@ def save_routing_demands(demand_json):
     RoutingDemand.objects.bulk_create(demands_to_insert, batch_size=2000, ignore_conflicts=True)
     # print(f"====== 已成功入库 {len(demands_to_insert)} 条动态生成的路由需求 ======")
 
-@shared_task
+@shared_task(ignore_result=True)
 def save_routing_results(results_list):
     """
     接收路由结果数组并批量存入数据库记录中
@@ -448,7 +448,7 @@ def save_routing_results(results_list):
         RoutingResult.objects.bulk_create(results_to_insert, batch_size=2000)
 
 
-@shared_task
+@shared_task(ignore_result=True)
 def save_planning_demands(constellation_id, task_list):
     """
     异步解构生成的任务规划需求列表并存入数据库
@@ -523,7 +523,7 @@ def save_planning_demands(constellation_id, task_list):
     PlanningTaskDemand.objects.bulk_create(demands_to_insert, batch_size=2000, ignore_conflicts=True)
 
 
-@shared_task
+@shared_task(ignore_result=True)
 def save_task_planning_results(result_json):
     """异步保存规划结果"""
     from django.db import connection
@@ -567,7 +567,7 @@ def save_task_planning_results(result_json):
     except Exception as e:
         print(f"Error saving task planning result: {e}")
 
-@shared_task
+@shared_task(ignore_result=True)
 def save_realtime_node_states(constellation_id, ts_ms, node_list_data):
     """
     异步批量落库当前的实时节点属性
@@ -614,7 +614,7 @@ def save_realtime_node_states(constellation_id, ts_ms, node_list_data):
     SimRealtimeNodeState.objects.bulk_create(nodes_to_insert, batch_size=2000)
 
 
-@shared_task
+@shared_task(ignore_result=True)
 def save_realtime_link_states(constellation_id, ts_ms, link_list_data):
     """
     异步批量落库当前的实时链路属性
@@ -646,7 +646,7 @@ def save_realtime_link_states(constellation_id, ts_ms, link_list_data):
         
     SimRealtimeLinkState.objects.bulk_create(links_to_insert, batch_size=5000)
 
-@shared_task
+@shared_task(ignore_result=True)
 def push_constellation_kpi_dashboard():
     """
     异步任务：按星座分组，计算三大关键指标，并推送给前端。
@@ -706,7 +706,7 @@ def push_constellation_kpi_dashboard():
             'message': payload
         }
     )
-@shared_task
+@shared_task(ignore_result=True)
 def save_prediction_accuracy(constellation_id, summary):
     """
     异步落库：将链路预测的整体精度评估结果写入 TopologyPredictionAccuracy 表
